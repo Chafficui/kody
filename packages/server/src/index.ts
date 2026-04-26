@@ -70,7 +70,7 @@ if (!existing) {
             url: "https://kody.codai.app",
             content: `Kody is an open-source (MIT license) embeddable AI chat assistant widget. Website owners add a single script tag and get a fully branded, topic-restricted AI assistant. Built by Felix Beinßen.
 
-Key features: one-line embed, any OpenAI-compatible AI backend (Ollama, vLLM, llama.cpp, OpenAI), full branding customization, three-layer guardrails, ticket creation (Jira, GitHub, Linear, email, webhook), knowledge base support, Shadow DOM isolation, under 21 KB gzipped, self-hosted with SQLite, admin dashboard.`,
+Key features: one-line embed, any OpenAI-compatible AI backend (Ollama, vLLM, llama.cpp, OpenAI), full branding customization, three-layer guardrails, ticket creation (Jira, GitHub, Linear, email, webhook), knowledge base support, Shadow DOM isolation, under 30 KB gzipped, self-hosted with SQLite, admin dashboard.`,
           },
           {
             type: "text" as const,
