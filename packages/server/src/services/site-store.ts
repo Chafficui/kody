@@ -81,4 +81,34 @@ export class SiteStore {
 
     return rows.map((row) => siteConfigSchema.parse(JSON.parse(row.config)));
   }
+
+  listSitesByUserId(userId: number): SiteConfig[] {
+    const rows = this.db
+      .prepare("SELECT config FROM sites WHERE user_id = ? ORDER BY created_at DESC")
+      .all(userId) as { config: string }[];
+
+    return rows.map((row) => siteConfigSchema.parse(JSON.parse(row.config)));
+  }
+
+  getSiteUserId(siteId: string): number | null {
+    const row = this.db
+      .prepare("SELECT user_id FROM sites WHERE site_id = ?")
+      .get(siteId) as { user_id: number | null } | undefined;
+
+    return row?.user_id ?? null;
+  }
+
+  setSiteUserId(siteId: string, userId: number): void {
+    this.db
+      .prepare("UPDATE sites SET user_id = ? WHERE site_id = ?")
+      .run(userId, siteId);
+  }
+
+  countSitesByUserId(userId: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) as cnt FROM sites WHERE user_id = ?")
+      .get(userId) as { cnt: number };
+
+    return row.cnt;
+  }
 }
