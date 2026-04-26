@@ -15,10 +15,11 @@
   },
   "dependencies": {
     "@kody/shared": "workspace:*",
+    "argon2": "^0.41.0",
     "better-sqlite3": "^11.8.0",
     "express": "^5.1.0",
     "helmet": "^8.1.0",
-    "argon2": "^0.41.0",
+    "resend": "^6.12.2",
     "uuid": "^14.0.0",
     "zod": "^3.24.0"
   },
