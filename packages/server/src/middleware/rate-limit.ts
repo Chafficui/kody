@@ -77,6 +77,7 @@ export function createRateLimitMiddleware(rateLimiter: RateLimiter) {
 
     const result = rateLimiter.check(key, config.rateLimit);
     if (!result.allowed) {
+      console.warn(`[rate-limit] 429 Rate limit exceeded for ${config.siteId} (${ip}), retry after ${result.retryAfterSeconds}s`);
       if (result.retryAfterSeconds) {
         res.set("Retry-After", String(result.retryAfterSeconds));
       }

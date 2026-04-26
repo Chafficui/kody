@@ -14,9 +14,11 @@ export function createChatRouter(conversationStore: ConversationStore): RouterTy
   router.post("/", async (req, res) => {
     const config = req.siteConfig;
     if (!config) {
+      console.warn("[chat] 400 Missing site config");
       res.status(400).json({ error: { message: "Missing site config" } });
       return;
     }
+    console.log(`[chat] ${config.siteId} — new message from ${req.ip}`);
 
     const parsed = chatRequestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -33,6 +35,7 @@ export function createChatRouter(conversationStore: ConversationStore): RouterTy
     });
 
     if (!inputResult.allowed) {
+      console.warn(`[chat] Input blocked for ${config.siteId}: ${inputResult.reason}`);
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
@@ -102,6 +105,7 @@ export function createChatRouter(conversationStore: ConversationStore): RouterTy
         res.end();
       },
       onError: (error) => {
+        console.error(`[chat] AI stream error for ${config.siteId}:`, error);
         res.write(
           `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
         );
