@@ -77,10 +77,10 @@ export function createRateLimitMiddleware(rateLimiter: RateLimiter) {
 
     const result = rateLimiter.check(key, config.rateLimit);
     if (!result.allowed) {
-      res.status(429).json({ error: { message: "Rate limit exceeded" } });
       if (result.retryAfterSeconds) {
         res.set("Retry-After", String(result.retryAfterSeconds));
       }
+      res.status(429).json({ error: { message: "Rate limit exceeded" } });
       return;
     }
 

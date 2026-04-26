@@ -30,6 +30,7 @@ export type ChatEvent =
   | { type: "delta"; content: string }
   | { type: "done" }
   | { type: "error"; message: string }
+  | { type: "rate_limited"; retryAfterSeconds: number }
   | { type: "blocked"; message: string }
   | { type: "ticket_prompt"; message: string };
 
@@ -81,10 +82,15 @@ export class KodyApiClient {
     }
 
     if (!res.ok) {
-      onEvent?.({
-        type: "error",
-        message: `Server error: ${res.status} ${res.statusText}`,
-      });
+      if (res.status === 429) {
+        const retryAfter = parseInt(res.headers.get("Retry-After") || "60", 10);
+        onEvent?.({ type: "rate_limited", retryAfterSeconds: retryAfter });
+      } else {
+        onEvent?.({
+          type: "error",
+          message: `Server error: ${res.status} ${res.statusText}`,
+        });
+      }
       return;
     }
 

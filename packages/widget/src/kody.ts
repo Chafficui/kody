@@ -11,7 +11,15 @@ import {
 import { setSourceUrls } from "./utils/markdown.js";
 import { createTypingIndicator } from "./components/typing-indicator.js";
 import { createTicketForm } from "./components/ticket-form.js";
-import { getSessionId, setSessionId } from "./utils/session.js";
+import {
+  getSessionId,
+  setSessionId,
+  getStoredMessages,
+  storeMessages,
+  getWidgetState,
+  setWidgetState,
+  type StoredMessage,
+} from "./utils/session.js";
 
 export interface KodyWidgetConfig {
   siteId: string;
@@ -36,10 +44,12 @@ export class KodyWidget {
   private sessionId: string | null = null;
   private hasMessages = false;
   private stopAttention: (() => void) | null = null;
+  private messages: StoredMessage[] = [];
 
   constructor(private widgetConfig: KodyWidgetConfig) {
     this.client = new KodyApiClient(widgetConfig.serverUrl, widgetConfig.siteId);
     this.sessionId = getSessionId(widgetConfig.siteId);
+    this.messages = getStoredMessages(widgetConfig.siteId);
 
     this.host = document.createElement("div");
     this.host.id = "kody-widget";
@@ -84,20 +94,63 @@ export class KodyWidget {
 
     this.chatWindow.inputBar.input.placeholder = branding.inputPlaceholder;
 
-    const welcome = createWelcomeMessage(branding.welcomeMessage);
-    this.chatWindow.messagesContainer.appendChild(welcome);
+    if (this.messages.length > 0) {
+      this.restoreMessages();
+    } else {
+      const welcome = createWelcomeMessage(branding.welcomeMessage);
+      this.chatWindow.messagesContainer.appendChild(welcome);
+    }
 
     this.shadow.appendChild(this.chatWindow.element);
     this.shadow.appendChild(this.bubble);
 
+    const savedState = getWidgetState(this.widgetConfig.siteId);
+    if (savedState?.isOpen) {
+      this.open();
+      requestAnimationFrame(() => {
+        if (this.chatWindow) {
+          this.chatWindow.messagesContainer.scrollTop = savedState.scrollTop;
+        }
+      });
+    }
+
+    this.saveStateOnUnload();
+
+    const showAttention = !savedState?.isOpen && this.messages.length === 0;
     this.stopAttention = startBubbleAttention(this.bubble, this.shadow, {
-      enabled: true,
+      enabled: showAttention,
       message: branding.tagline
         ? `${branding.tagline} — chat with me!`
         : "Need help? Chat with me!",
       delayMs: 5000,
       intervalMs: 10000,
     });
+  }
+
+  private restoreMessages(): void {
+    if (!this.chatWindow) return;
+    this.hasMessages = true;
+    for (const msg of this.messages) {
+      const el = renderMessage(msg);
+      this.chatWindow.messagesContainer.appendChild(el);
+    }
+  }
+
+  private persistMessages(): void {
+    storeMessages(this.widgetConfig.siteId, this.messages);
+  }
+
+  private saveStateOnUnload(): void {
+    const handler = () => {
+      if (this.chatWindow) {
+        setWidgetState(this.widgetConfig.siteId, {
+          isOpen: this.isOpen,
+          scrollTop: this.chatWindow.messagesContainer.scrollTop,
+        });
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    window.addEventListener("pagehide", handler);
   }
 
   open(): void {
@@ -138,6 +191,9 @@ export class KodyWidget {
       this.hasMessages = true;
     }
 
+    this.messages.push({ role: "user", content: message });
+    this.persistMessages();
+
     const userMsg = renderMessage({ role: "user", content: message });
     this.chatWindow.messagesContainer.appendChild(userMsg);
     this.chatWindow.scrollToBottom();
@@ -151,6 +207,7 @@ export class KodyWidget {
 
     const streaming = createStreamingMessage();
     let typingRemoved = false;
+    let streamedContent = "";
 
     this.abortController = new AbortController();
 
@@ -171,6 +228,7 @@ export class KodyWidget {
               typingRemoved = true;
               this.chatWindow.messagesContainer.appendChild(streaming.element);
             }
+            streamedContent += event.content;
             streaming.append(event.content);
             this.chatWindow.scrollToBottom();
             break;
@@ -181,10 +239,24 @@ export class KodyWidget {
               typingRemoved = true;
             }
             streaming.finish();
+            if (streamedContent) {
+              this.messages.push({ role: "assistant", content: streamedContent });
+              this.persistMessages();
+            }
             this.isStreaming = false;
             this.chatWindow.setLoading(false);
             this.chatWindow.scrollToBottom();
             this.chatWindow.inputBar.input.focus();
+            break;
+
+          case "rate_limited":
+            if (!typingRemoved) {
+              typing.remove();
+              typingRemoved = true;
+            }
+            this.showRateLimitMessage(event.retryAfterSeconds);
+            this.isStreaming = false;
+            this.chatWindow.setLoading(false);
             break;
 
           case "blocked":
@@ -228,6 +300,37 @@ export class KodyWidget {
     const msg = renderMessage({ role: "assistant", content });
     this.chatWindow.messagesContainer.appendChild(msg);
     this.chatWindow.scrollToBottom();
+  }
+
+  private showRateLimitMessage(retryAfterSeconds: number): void {
+    if (!this.chatWindow) return;
+
+    let remaining = retryAfterSeconds;
+    const friendly =
+      remaining >= 3600
+        ? "You've reached the daily message limit."
+        : remaining >= 60
+          ? `Too many messages. Please wait ${Math.ceil(remaining / 60)} minute${Math.ceil(remaining / 60) > 1 ? "s" : ""}.`
+          : `Too many messages. Please wait ${remaining} seconds.`;
+
+    const msg = renderMessage({ role: "assistant", content: friendly });
+    this.chatWindow.messagesContainer.appendChild(msg);
+    this.chatWindow.scrollToBottom();
+
+    if (remaining < 120) {
+      const contentEl = msg.querySelector(".kody-message-content");
+      if (!contentEl) return;
+
+      const interval = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          clearInterval(interval);
+          contentEl.textContent = "You can send messages again now.";
+          return;
+        }
+        contentEl.textContent = `Too many messages. Please wait ${remaining} second${remaining !== 1 ? "s" : ""}.`;
+      }, 1000);
+    }
   }
 
   private showTicketForm(): void {
