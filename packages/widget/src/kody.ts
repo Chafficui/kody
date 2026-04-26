@@ -14,8 +14,10 @@ import { createTicketForm } from "./components/ticket-form.js";
 import {
   getSessionId,
   setSessionId,
+  clearSession,
   getStoredMessages,
   storeMessages,
+  clearStoredMessages,
   getWidgetState,
   setWidgetState,
   type StoredMessage,
@@ -90,6 +92,7 @@ export class KodyWidget {
       position,
       onClose: () => this.close(),
       onSend: (message) => this.handleSend(message),
+      onNewChat: () => this.newChat(),
     });
 
     this.chatWindow.inputBar.input.placeholder = branding.inputPlaceholder;
@@ -141,14 +144,7 @@ export class KodyWidget {
   }
 
   private saveStateOnUnload(): void {
-    const handler = () => {
-      if (this.chatWindow) {
-        setWidgetState(this.widgetConfig.siteId, {
-          isOpen: this.isOpen,
-          scrollTop: this.chatWindow.messagesContainer.scrollTop,
-        });
-      }
-    };
+    const handler = () => this.saveState();
     window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
   }
@@ -177,9 +173,41 @@ export class KodyWidget {
   }
 
   destroy(): void {
+    this.saveState();
     this.abortController?.abort();
     this.stopAttention?.();
     this.host.remove();
+  }
+
+  private saveState(): void {
+    if (this.chatWindow) {
+      setWidgetState(this.widgetConfig.siteId, {
+        isOpen: this.isOpen,
+        scrollTop: this.chatWindow.messagesContainer.scrollTop,
+      });
+    }
+  }
+
+  private newChat(): void {
+    if (!this.chatWindow || !this.config) return;
+
+    this.abortController?.abort();
+    this.isStreaming = false;
+    this.chatWindow.setLoading(false);
+
+    this.messages = [];
+    this.sessionId = null;
+    this.hasMessages = false;
+    clearStoredMessages(this.widgetConfig.siteId);
+    clearSession(this.widgetConfig.siteId);
+
+    while (this.chatWindow.messagesContainer.firstChild) {
+      this.chatWindow.messagesContainer.removeChild(this.chatWindow.messagesContainer.firstChild);
+    }
+
+    const welcome = createWelcomeMessage(this.config.branding.welcomeMessage);
+    this.chatWindow.messagesContainer.appendChild(welcome);
+    this.chatWindow.inputBar.input.focus();
   }
 
   private async handleSend(message: string): Promise<void> {

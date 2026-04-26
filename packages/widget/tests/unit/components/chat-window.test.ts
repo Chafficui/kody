@@ -12,6 +12,7 @@ function makeWindow(
     position: "bottom-right",
     onClose: overrides.onClose ?? vi.fn(),
     onSend: overrides.onSend ?? vi.fn(),
+    onNewChat: vi.fn(),
   });
 }
 
@@ -58,7 +59,7 @@ describe("createChatWindow", () => {
   it("calls onClose when close button is clicked", () => {
     const onClose = vi.fn();
     const win = makeWindow({ onClose });
-    const closeBtn = win.element.querySelector(".kody-close-btn") as HTMLButtonElement;
+    const closeBtn = win.element.querySelector("[aria-label='Close chat']") as HTMLButtonElement;
     closeBtn.click();
     expect(onClose).toHaveBeenCalledOnce();
   });

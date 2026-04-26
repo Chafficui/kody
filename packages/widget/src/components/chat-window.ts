@@ -9,6 +9,7 @@ export interface ChatWindowOptions {
   position: "bottom-right" | "bottom-left";
   onClose: () => void;
   onSend: (message: string) => void;
+  onNewChat: () => void;
 }
 
 export interface ChatWindow {
@@ -18,6 +19,24 @@ export interface ChatWindow {
   setOpen(open: boolean): void;
   setLoading(loading: boolean): void;
   scrollToBottom(): void;
+}
+
+function createNewChatSvg(): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z");
+  svg.appendChild(path);
+
+  return svg;
 }
 
 function createCloseSvg(): SVGSVGElement {
@@ -67,7 +86,7 @@ function createSendSvg(): SVGSVGElement {
  * Create the main chat window.
  */
 export function createChatWindow(options: ChatWindowOptions): ChatWindow {
-  const { name, tagline, position, onClose, onSend } = options;
+  const { name, tagline, position, onClose, onSend, onNewChat } = options;
 
   // ── Header ───────────────────────────────────────────────────────────────
   const titleEl = el("span", { class: "kody-header-name" }, [name]);
@@ -79,14 +98,23 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
 
   const headerInfo = el("div", { class: "kody-header-info" }, headerContent);
 
+  const newChatBtn = el("button", {
+    class: "kody-header-btn",
+    "aria-label": "New chat",
+    title: "New chat",
+  });
+  newChatBtn.appendChild(createNewChatSvg());
+  on(newChatBtn, "click", () => onNewChat());
+
   const closeBtn = el("button", {
-    class: "kody-close-btn",
+    class: "kody-header-btn",
     "aria-label": "Close chat",
   });
   closeBtn.appendChild(createCloseSvg());
   on(closeBtn, "click", () => onClose());
 
-  const header = el("div", { class: "kody-header" }, [headerInfo, closeBtn]);
+  const headerActions = el("div", { class: "kody-header-actions" }, [newChatBtn, closeBtn]);
+  const header = el("div", { class: "kody-header" }, [headerInfo, headerActions]);
 
   // ── Messages container ───────────────────────────────────────────────────
   const messagesContainer = el("div", { class: "kody-messages" });

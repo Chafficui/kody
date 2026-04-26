@@ -209,27 +209,34 @@ export const BASE_STYLES = /* css */ `
   line-height: 1.3;
 }
 
-.kody-close-btn {
+.kody-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kody-header-btn {
   background: none;
   border: none;
   color: inherit;
   cursor: pointer;
-  padding: 4px;
+  padding: 5px;
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background 0.15s ease;
+  opacity: 0.85;
 }
 
-.kody-close-btn:hover {
+.kody-header-btn:hover {
   background: rgba(255, 255, 255, 0.15);
+  opacity: 1;
 }
 
-.kody-close-btn svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
+.kody-header-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* ── Messages area ── */
