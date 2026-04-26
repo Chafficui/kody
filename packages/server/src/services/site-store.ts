@@ -46,17 +46,23 @@ export class SiteStore {
   }
 
   updateSite(siteId: string, rawConfig: unknown): SiteConfig {
-    const config = siteConfigSchema.parse(rawConfig);
+    const row = this.db
+      .prepare("SELECT config FROM sites WHERE site_id = ?")
+      .get(siteId) as { config: string } | undefined;
 
-    const result = this.db
+    if (!row) {
+      throw new Error(`Site not found: ${siteId}`);
+    }
+
+    const existing = JSON.parse(row.config);
+    const merged = { ...existing, ...(rawConfig as Record<string, unknown>) };
+    const config = siteConfigSchema.parse(merged);
+
+    this.db
       .prepare(
         "UPDATE sites SET config = ?, enabled = ?, updated_at = datetime('now') WHERE site_id = ?",
       )
       .run(JSON.stringify(config), config.enabled ? 1 : 0, siteId);
-
-    if (result.changes === 0) {
-      throw new Error(`Site not found: ${siteId}`);
-    }
 
     this.cache.set(siteId, config);
     return config;
