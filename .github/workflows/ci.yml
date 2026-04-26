@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck all packages
+        run: pnpm run typecheck
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build packages (skip web to avoid Next.js SIGSEGV in CI)
+        run: |
+          pnpm --filter @kody/shared run build
+          pnpm --filter @kody/widget run build
+          pnpm --filter @kody/server run build
+
+  bundle-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared and widget
+        run: |
+          pnpm --filter @kody/shared run build
+          pnpm --filter @kody/widget run build
+
+      - name: Check widget bundle size
+        run: |
+          GZIP_SIZE=$(gzip -c packages/widget/dist/kody.js | wc -c)
+          GZIP_KB=$((GZIP_SIZE / 1024))
+          echo "Widget gzipped size: ${GZIP_SIZE} bytes (${GZIP_KB}KB)"
+          if [ "$GZIP_SIZE" -gt 30720 ]; then
+            echo "::error::Widget bundle exceeds 30KB gzip limit (${GZIP_SIZE} bytes)"
+            exit 1
+          fi

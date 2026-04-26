@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+.git/
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.local
+.env.production
+*.log
+*.tsbuildinfo
+coverage/
+.vitest/
