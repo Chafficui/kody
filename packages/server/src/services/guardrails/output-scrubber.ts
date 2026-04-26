@@ -14,8 +14,8 @@ export interface ScrubResult {
 }
 
 function buildProviderNameRegex(): RegExp {
-  const escaped = AI_PROVIDER_NAMES.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const sorted = escaped.sort((a, b) => b.length - a.length);
+  const escaped = AI_PROVIDER_NAMES.map((name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const sorted = escaped.sort((a: string, b: string) => b.length - a.length);
   return new RegExp(`\\b(${sorted.join("|")})\\b`, "gi");
 }
 
