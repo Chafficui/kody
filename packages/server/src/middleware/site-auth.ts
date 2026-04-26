@@ -28,7 +28,7 @@ export function createSiteAuth(siteStore: SiteStore) {
     const origin = req.headers.origin || req.headers.referer;
     if (origin) {
       const originUrl = new URL(origin).origin;
-      const allowed = config.allowedOrigins.some((ao) => {
+      const allowed = config.allowedOrigins.some((ao: string) => {
         try {
           return new URL(ao).origin === originUrl;
         } catch {

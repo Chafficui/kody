@@ -18,13 +18,15 @@ function estimateChars(source: EnrichedKnowledgeSource): number {
     case "text":
       return source.title.length + source.content.length;
     case "faq":
-      return source.entries.reduce((sum, e) => sum + e.question.length + e.answer.length, 0);
+      return source.entries.reduce((sum: number, e: { question: string; answer: string }) => sum + e.question.length + e.answer.length, 0);
     case "url":
       return (source.fetchedContent?.length ?? 0) + (source.title?.length ?? source.url.length);
     case "file":
       return (
         (source.fetchedContent?.length ?? 0) + (source.title?.length ?? source.filePath.length)
       );
+    default:
+      return 0;
   }
 }
 
