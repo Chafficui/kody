@@ -1,6 +1,9 @@
 import { createApp } from "./app.js";
 import { loadEnv } from "./env.js";
 import { getDb } from "./db/index.js";
+import { logStore } from "./services/log-store.js";
+
+logStore.install();
 
 const env = loadEnv();
 const db = getDb(env.DATABASE_PATH);

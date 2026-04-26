@@ -8,6 +8,7 @@ import { createTicketsRouter } from "./routes/tickets.js";
 import { createAdminAuthRouter } from "./routes/admin/auth.js";
 import { createAdminSitesRouter } from "./routes/admin/sites.js";
 import { createAdminUsersRouter } from "./routes/admin/users.js";
+import { createAdminLogsRouter } from "./routes/admin/logs.js";
 import { createWidgetRouter } from "./routes/widget.js";
 import { createSiteAuth } from "./middleware/site-auth.js";
 import { createAdminAuth } from "./middleware/admin-auth.js";
@@ -70,6 +71,7 @@ export function createApp(
   const adminAuth = createAdminAuth(authService);
   app.use("/api/admin/sites", adminAuth, createAdminSitesRouter(siteStore));
   app.use("/api/admin/users", adminAuth, createAdminUsersRouter(authService));
+  app.use("/api/admin/logs", adminAuth, createAdminLogsRouter());
 
   app.use(errorHandler);
 
