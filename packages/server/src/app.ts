@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import type Database from "better-sqlite3";
@@ -82,6 +84,14 @@ export function createApp(
 
   const userAuth = createUserAuth(userAuthService);
   app.use("/api/user/sites", userAuth, createUserSitesRouter(siteStore));
+
+  // Serve admin SPA static files
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const adminDist = path.resolve(__dirname, "../../admin/dist");
+  app.use("/admin", express.static(adminDist));
+  app.use("/admin/*", (_req, res) => {
+    res.sendFile(path.join(adminDist, "index.html"));
+  });
 
   app.use(errorHandler);
 

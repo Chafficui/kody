@@ -11,6 +11,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 # Copy package.json files for all packages
 COPY packages/shared/package.json packages/shared/
 COPY packages/widget/package.json packages/widget/
+COPY packages/admin/package.json packages/admin/
 COPY packages/server/package.json packages/server/
 
 # Install all dependencies (including devDependencies for building)
@@ -19,11 +20,13 @@ RUN pnpm install --frozen-lockfile
 # Copy source code
 COPY packages/shared/ packages/shared/
 COPY packages/widget/ packages/widget/
+COPY packages/admin/ packages/admin/
 COPY packages/server/ packages/server/
 
-# Build in dependency order: shared -> widget -> server
+# Build in dependency order: shared -> widget -> admin -> server
 RUN pnpm --filter @kody/shared run build && \
     pnpm --filter @kody/widget run build && \
+    pnpm --filter @kody/admin run build && \
     pnpm --filter @kody/server run build
 
 # Stage 2: Production runtime
@@ -49,6 +52,9 @@ COPY --from=build /app/packages/server/dist/ packages/server/dist/
 
 # Copy widget dist (served via /widget.js route)
 COPY --from=build /app/packages/widget/dist/ packages/widget/dist/
+
+# Copy admin SPA dist (served at /admin/)
+COPY --from=build /app/packages/admin/dist/ packages/admin/dist/
 
 # Create data directory for SQLite
 RUN mkdir -p /data && chown node:node /data
