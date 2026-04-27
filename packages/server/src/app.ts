@@ -89,7 +89,7 @@ export function createApp(
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const adminDist = path.resolve(__dirname, "../../admin/dist");
   app.use("/admin", express.static(adminDist));
-  app.use("/admin/*", (_req, res) => {
+  app.use("/admin/{*splat}", (_req, res) => {
     res.sendFile(path.join(adminDist, "index.html"));
   });
 
