@@ -70,7 +70,7 @@ export function createApp(
 
   const siteAuth = createSiteAuth(siteStore);
   const rateLimit = createRateLimitMiddleware(rateLimiter);
-  app.use("/api/chat", siteAuth, rateLimit, createChatRouter(conversationStore, urlFetcher));
+  app.use("/api/chat", siteAuth, rateLimit, createChatRouter(conversationStore, urlFetcher, deps.db));
   app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
 
   app.use("/api/admin", createAdminAuthRouter(authService));

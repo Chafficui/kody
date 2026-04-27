@@ -171,6 +171,43 @@ export const rateLimitSchema = z.object({
   messagesPerDay: z.number().int().min(1).max(10000).default(1000),
 });
 
+const toolParameterSchema = z.object({
+  type: z.enum(["string", "number", "boolean", "integer"]),
+  description: z.string().max(500).optional(),
+  enum: z.array(z.string()).optional(),
+});
+
+const customToolSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z_][a-z0-9_]*$/),
+  description: z.string().min(1).max(1000),
+  parameters: z.object({
+    type: z.literal("object"),
+    properties: z.record(toolParameterSchema),
+    required: z.array(z.string()).default([]),
+  }),
+  endpoint: z.object({
+    url: z.string().url(),
+    method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
+    headers: z.record(z.string()).default({}),
+    timeoutMs: z.number().int().min(1000).max(30000).default(10000),
+  }),
+});
+
+export const toolsSchema = z.object({
+  enabled: z.boolean().default(false),
+  maxToolCalls: z.number().int().min(1).max(10).default(5),
+  customTools: z.array(customToolSchema).default([]),
+  builtinTools: z
+    .object({
+      knowledgeSearch: z.boolean().default(true),
+    })
+    .default({}),
+});
+
 export const siteConfigSchema = z.object({
   siteId: z
     .string()
@@ -183,6 +220,7 @@ export const siteConfigSchema = z.object({
   guardrails: guardrailsSchema,
   knowledge: knowledgeSchema.default({}),
   tickets: ticketsSchema.default({}),
+  tools: toolsSchema.default({}),
   rateLimit: rateLimitSchema.default({}),
   enabled: z.boolean().default(true),
 });
@@ -197,6 +235,8 @@ export type TicketProvider = z.infer<typeof ticketProviderSchema>;
 export type TicketsConfig = z.infer<typeof ticketsSchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 export type RagConfig = z.infer<typeof ragSchema>;
+export type ToolsConfig = z.infer<typeof toolsSchema>;
+export type CustomTool = z.infer<typeof customToolSchema>;
 
 export const publicBrandingSchema = brandingSchema;
 

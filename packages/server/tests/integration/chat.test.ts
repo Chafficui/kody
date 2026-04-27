@@ -5,6 +5,14 @@ import { migrate } from "../../src/db/migrate.js";
 import { createApp } from "../../src/app.js";
 import type { SiteStore } from "../../src/services/site-store.js";
 
+vi.mock("../../src/services/capability-probe.js", () => ({
+  probeCapabilities: vi.fn().mockResolvedValue({
+    supportsTools: false,
+    supportsEmbeddings: false,
+    checkedAt: Date.now(),
+  }),
+}));
+
 vi.mock("../../src/services/ai-provider.js", () => ({
   streamChatCompletion: vi.fn(
     async (
@@ -19,7 +27,7 @@ vi.mock("../../src/services/ai-provider.js", () => ({
       callbacks.onToken("Hello");
       callbacks.onToken(", how can I help?");
       callbacks.onDone();
-      return "Hello, how can I help?";
+      return { content: "Hello, how can I help?", toolCalls: [], finishReason: "stop" };
     },
   ),
 }));

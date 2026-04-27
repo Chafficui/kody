@@ -1,4 +1,5 @@
 import { Router, type Router as RouterType } from "express";
+import type Database from "better-sqlite3";
 import { chatRequestSchema } from "@kody/shared";
 import type { ConversationStore } from "../services/conversation-store.js";
 import { filterInput } from "../services/guardrails/input-filter.js";
@@ -7,8 +8,17 @@ import { scrubOutput } from "../services/guardrails/output-scrubber.js";
 import { streamChatCompletion } from "../services/ai-provider.js";
 import { createKnowledgeAssembler } from "../services/knowledge/index.js";
 import type { UrlFetcher } from "../services/knowledge/url-fetcher.js";
+import { createEmbeddingService } from "../services/knowledge/embedding.js";
+import { KnowledgeRetriever } from "../services/knowledge/retriever.js";
+import { ToolExecutor } from "../services/tools/executor.js";
+import { runAgent } from "../services/agent.js";
+import { probeCapabilities } from "../services/capability-probe.js";
 
-export function createChatRouter(conversationStore: ConversationStore, urlFetcher?: UrlFetcher): RouterType {
+export function createChatRouter(
+  conversationStore: ConversationStore,
+  urlFetcher?: UrlFetcher,
+  db?: Database.Database,
+): RouterType {
   const knowledgeAssembler = createKnowledgeAssembler(urlFetcher);
   const router: RouterType = Router();
 
@@ -94,32 +104,132 @@ export function createChatRouter(conversationStore: ConversationStore, urlFetche
 
     res.write(`data: ${JSON.stringify({ type: "session", sessionId })}\n\n`);
 
-    const fullContent = await streamChatCompletion(config.ai, messages, {
-      onToken: (token) => {
-        const scrubbed = scrubOutput(token, scrubberConfig);
-        if (!scrubbed.blocked) {
-          res.write(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
-        }
-      },
-      onDone: () => {
-        res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-        res.end();
-      },
-      onError: (error) => {
-        console.error(`[chat] AI stream error for ${config.siteId}:`, error);
-        res.write(
-          `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
-        );
-        res.end();
-      },
-    });
+    const capabilities = await probeCapabilities(config.ai);
 
-    if (fullContent) {
-      const scrubbed = scrubOutput(fullContent, scrubberConfig);
-      conversationStore.addMessage(sessionId, {
-        role: "assistant",
-        content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+    if (config.tools.enabled && capabilities.supportsTools && db) {
+      const embeddingService = createEmbeddingService(config.ai);
+      const retriever = capabilities.supportsEmbeddings
+        ? new KnowledgeRetriever(db, embeddingService)
+        : null;
+
+      const toolExecutor = new ToolExecutor(retriever);
+      const tools = toolExecutor.getToolDefinitions(config);
+
+      const agentResult = await runAgent({
+        config,
+        messages,
+        toolExecutor,
+        tools,
+        callbacks: {
+          onToken: (token) => {
+            res.write(`data: ${JSON.stringify({ type: "delta", content: token })}\n\n`);
+          },
+          onDone: () => {
+            res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+            res.end();
+          },
+          onError: (error) => {
+            console.error(`[chat] Agent error for ${config.siteId}:`, error);
+            res.write(
+              `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
+            );
+            res.end();
+          },
+          onToolStart: (name, displayText) => {
+            res.write(`data: ${JSON.stringify({ type: "tool_start", name, displayText })}\n\n`);
+          },
+          onToolEnd: (name) => {
+            res.write(`data: ${JSON.stringify({ type: "tool_end", name })}\n\n`);
+          },
+        },
+        scrubberConfig,
       });
+
+      if (agentResult.content) {
+        const scrubbed = scrubOutput(agentResult.content, scrubberConfig);
+        conversationStore.addMessage(sessionId, {
+          role: "assistant",
+          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+        });
+      }
+    } else if (
+      config.knowledge.rag.enabled &&
+      capabilities.supportsEmbeddings &&
+      db
+    ) {
+      const embeddingService = createEmbeddingService(config.ai);
+      const retriever = new KnowledgeRetriever(db, embeddingService);
+
+      if (retriever.hasIndex(config.siteId)) {
+        const ragResults = await retriever.retrieve(config.siteId, message, {
+          topK: config.knowledge.rag.topK,
+          similarityThreshold: config.knowledge.rag.similarityThreshold,
+        });
+        const context = retriever.formatAsContext(ragResults);
+
+        if (context) {
+          messages.splice(messages.length - 1, 0, {
+            role: "system",
+            content: context,
+          });
+        }
+      }
+
+      const result = await streamChatCompletion(config.ai, messages, {
+        onToken: (token) => {
+          const scrubbed = scrubOutput(token, scrubberConfig);
+          if (!scrubbed.blocked) {
+            res.write(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
+          }
+        },
+        onDone: () => {
+          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+          res.end();
+        },
+        onError: (error) => {
+          console.error(`[chat] AI stream error for ${config.siteId}:`, error);
+          res.write(
+            `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
+          );
+          res.end();
+        },
+      });
+
+      if (result.content) {
+        const scrubbed = scrubOutput(result.content, scrubberConfig);
+        conversationStore.addMessage(sessionId, {
+          role: "assistant",
+          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+        });
+      }
+    } else {
+      const result = await streamChatCompletion(config.ai, messages, {
+        onToken: (token) => {
+          const scrubbed = scrubOutput(token, scrubberConfig);
+          if (!scrubbed.blocked) {
+            res.write(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
+          }
+        },
+        onDone: () => {
+          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+          res.end();
+        },
+        onError: (error) => {
+          console.error(`[chat] AI stream error for ${config.siteId}:`, error);
+          res.write(
+            `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
+          );
+          res.end();
+        },
+      });
+
+      if (result.content) {
+        const scrubbed = scrubOutput(result.content, scrubberConfig);
+        conversationStore.addMessage(sessionId, {
+          role: "assistant",
+          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+        });
+      }
     }
   });
 
