@@ -45,6 +45,33 @@ interface FormData {
   knowledge: {
     sources: KnowledgeSourceForm[];
   };
+  tools: {
+    enabled: boolean;
+    maxToolCalls: number;
+    builtinTools: { knowledgeSearch: boolean };
+    customTools: Array<{
+      name: string;
+      description: string;
+      parameters: {
+        type: "object";
+        properties: Record<string, { type: string; description: string; enum?: string[] }>;
+        required: string[];
+      };
+      endpoint: {
+        url: string;
+        method: "GET" | "POST" | "PUT" | "PATCH";
+        headers: Record<string, string>;
+        timeoutMs: number;
+      };
+    }>;
+  };
+  rag: {
+    enabled: boolean;
+    chunkSize: number;
+    chunkOverlap: number;
+    topK: number;
+    similarityThreshold: number;
+  };
   rateLimit: {
     messagesPerMinute: number;
     messagesPerHour: number;
@@ -126,6 +153,38 @@ function siteToForm(site: any): FormData {
         url: s.url || "",
         entries: s.entries || [],
       })),
+    },
+    tools: {
+      enabled: site.tools?.enabled ?? false,
+      maxToolCalls: site.tools?.maxToolCalls ?? 5,
+      builtinTools: { knowledgeSearch: site.tools?.builtinTools?.knowledgeSearch ?? true },
+      customTools: (site.tools?.customTools || []).map(
+        (t: Record<string, unknown>) => ({
+          name: (t.name as string) || "",
+          description: (t.description as string) || "",
+          parameters: (t.parameters as FormData["tools"]["customTools"][number]["parameters"]) || {
+            type: "object" as const,
+            properties: {},
+            required: [],
+          },
+          endpoint: {
+            url: ((t.endpoint as Record<string, unknown>)?.url as string) || "",
+            method:
+              ((t.endpoint as Record<string, unknown>)?.method as string) || "POST",
+            headers:
+              ((t.endpoint as Record<string, unknown>)?.headers as Record<string, string>) || {},
+            timeoutMs:
+              ((t.endpoint as Record<string, unknown>)?.timeoutMs as number) || 10000,
+          },
+        }),
+      ),
+    },
+    rag: {
+      enabled: site.knowledge?.rag?.enabled ?? false,
+      chunkSize: site.knowledge?.rag?.chunkSize ?? 500,
+      chunkOverlap: site.knowledge?.rag?.chunkOverlap ?? 50,
+      topK: site.knowledge?.rag?.topK ?? 5,
+      similarityThreshold: site.knowledge?.rag?.similarityThreshold ?? 0.3,
     },
     rateLimit: {
       messagesPerMinute: site.rateLimit?.messagesPerMinute ?? 10,
@@ -232,6 +291,14 @@ export default function SiteEditPage() {
     setForm((prev) => (prev ? { ...prev, rateLimit: { ...prev.rateLimit, [key]: value } } : prev));
   }
 
+  function updateTools<K extends keyof FormData["tools"]>(key: K, value: FormData["tools"][K]) {
+    setForm((prev) => (prev ? { ...prev, tools: { ...prev.tools, [key]: value } } : prev));
+  }
+
+  function updateRag<K extends keyof FormData["rag"]>(key: K, value: FormData["rag"][K]) {
+    setForm((prev) => (prev ? { ...prev, rag: { ...prev.rag, [key]: value } } : prev));
+  }
+
   function validate(): string | null {
     if (!form) return "No form data.";
     const origins = form.allowedOrigins
@@ -323,6 +390,13 @@ export default function SiteEditPage() {
                 ...(s.url.trim() ? { url: s.url.trim() } : {}),
               };
             }),
+          rag: form.rag,
+        },
+        tools: {
+          enabled: form.tools.enabled,
+          maxToolCalls: form.tools.maxToolCalls,
+          builtinTools: form.tools.builtinTools,
+          customTools: form.tools.customTools,
         },
         rateLimit: form.rateLimit,
       };
@@ -841,6 +915,466 @@ export default function SiteEditPage() {
           >
             + Add Knowledge Source
           </button>
+        </Section>
+
+        <Section title="RAG Configuration">
+          <div className="flex items-center gap-3">
+            <input
+              id="ragEnabled"
+              type="checkbox"
+              checked={form.rag.enabled}
+              onChange={(e) => updateRag("enabled", e.target.checked)}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary/25"
+            />
+            <div>
+              <label htmlFor="ragEnabled" className="text-sm font-medium">
+                Enable smart retrieval (RAG)
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Automatically chunk and search knowledge sources for relevant context before
+                answering.
+              </p>
+            </div>
+          </div>
+          {form.rag.enabled && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="ragChunkSize" className={labelClass}>
+                  Chunk size: {form.rag.chunkSize}
+                </label>
+                <input
+                  id="ragChunkSize"
+                  type="range"
+                  min="100"
+                  max="2000"
+                  step="50"
+                  value={form.rag.chunkSize}
+                  onChange={(e) => updateRag("chunkSize", parseInt(e.target.value, 10))}
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>100</span>
+                  <span>2000</span>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="ragChunkOverlap" className={labelClass}>
+                  Chunk overlap: {form.rag.chunkOverlap}
+                </label>
+                <input
+                  id="ragChunkOverlap"
+                  type="range"
+                  min="0"
+                  max="500"
+                  step="10"
+                  value={form.rag.chunkOverlap}
+                  onChange={(e) => updateRag("chunkOverlap", parseInt(e.target.value, 10))}
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>0</span>
+                  <span>500</span>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="ragTopK" className={labelClass}>
+                  Top K results: {form.rag.topK}
+                </label>
+                <input
+                  id="ragTopK"
+                  type="range"
+                  min="1"
+                  max="20"
+                  step="1"
+                  value={form.rag.topK}
+                  onChange={(e) => updateRag("topK", parseInt(e.target.value, 10))}
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>1</span>
+                  <span>20</span>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="ragSimilarity" className={labelClass}>
+                  Similarity threshold: {form.rag.similarityThreshold}
+                </label>
+                <input
+                  id="ragSimilarity"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={form.rag.similarityThreshold}
+                  onChange={(e) =>
+                    updateRag("similarityThreshold", parseFloat(e.target.value))
+                  }
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>0</span>
+                  <span>1</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Agent Tools">
+          <div className="flex items-center gap-3">
+            <input
+              id="toolsEnabled"
+              type="checkbox"
+              checked={form.tools.enabled}
+              onChange={(e) => updateTools("enabled", e.target.checked)}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary/25"
+            />
+            <label htmlFor="toolsEnabled" className="text-sm font-medium">
+              Enable agent mode
+            </label>
+          </div>
+          {form.tools.enabled && (
+            <div className="space-y-4">
+              <div>
+                <p className={labelClass}>Built-in Tools</p>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="toolKnowledgeSearch"
+                      type="checkbox"
+                      checked={form.tools.builtinTools.knowledgeSearch}
+                      onChange={(e) =>
+                        updateTools("builtinTools", {
+                          ...form.tools.builtinTools,
+                          knowledgeSearch: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 rounded border-border text-primary focus:ring-primary/25"
+                    />
+                    <label htmlFor="toolKnowledgeSearch" className="text-sm">
+                      Knowledge search
+                    </label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Create ticket auto-enables when ticket providers are configured.
+                  </p>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="maxToolCalls" className={labelClass}>
+                  Max tool calls: {form.tools.maxToolCalls}
+                </label>
+                <input
+                  id="maxToolCalls"
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={form.tools.maxToolCalls}
+                  onChange={(e) =>
+                    updateTools("maxToolCalls", parseInt(e.target.value, 10))
+                  }
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>1</span>
+                  <span>10</span>
+                </div>
+              </div>
+              <div>
+                <p className={labelClass}>Custom Tools</p>
+                <div className="space-y-3">
+                  {form.tools.customTools.map((tool, tIdx) => (
+                    <div
+                      key={tIdx}
+                      className="rounded-lg border border-border p-4 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">Tool #{tIdx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const customTools = [...form.tools.customTools];
+                            customTools.splice(tIdx, 1);
+                            updateTools("customTools", customTools);
+                          }}
+                          className="text-xs text-red-500 hover:text-red-700"
+                        >
+                          Remove tool
+                        </button>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className={labelClass}>Name</label>
+                          <input
+                            type="text"
+                            value={tool.name}
+                            onChange={(e) => {
+                              const customTools = [...form.tools.customTools];
+                              customTools[tIdx] = {
+                                ...customTools[tIdx],
+                                name: e.target.value
+                                  .toLowerCase()
+                                  .replace(/[^a-z0-9_-]/g, "-"),
+                              };
+                              updateTools("customTools", customTools);
+                            }}
+                            placeholder="my-tool"
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Endpoint URL</label>
+                          <input
+                            type="text"
+                            value={tool.endpoint.url}
+                            onChange={(e) => {
+                              const customTools = [...form.tools.customTools];
+                              customTools[tIdx] = {
+                                ...customTools[tIdx],
+                                endpoint: { ...customTools[tIdx].endpoint, url: e.target.value },
+                              };
+                              updateTools("customTools", customTools);
+                            }}
+                            placeholder="https://api.example.com/action"
+                            className={inputClass}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className={labelClass}>Description</label>
+                        <textarea
+                          rows={2}
+                          value={tool.description}
+                          onChange={(e) => {
+                            const customTools = [...form.tools.customTools];
+                            customTools[tIdx] = {
+                              ...customTools[tIdx],
+                              description: e.target.value,
+                            };
+                            updateTools("customTools", customTools);
+                          }}
+                          placeholder="What does this tool do?"
+                          className={inputClass}
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className={labelClass}>HTTP Method</label>
+                          <select
+                            value={tool.endpoint.method}
+                            onChange={(e) => {
+                              const customTools = [...form.tools.customTools];
+                              customTools[tIdx] = {
+                                ...customTools[tIdx],
+                                endpoint: {
+                                  ...customTools[tIdx].endpoint,
+                                  method: e.target.value as "GET" | "POST" | "PUT" | "PATCH",
+                                },
+                              };
+                              updateTools("customTools", customTools);
+                            }}
+                            className={inputClass}
+                          >
+                            <option value="GET">GET</option>
+                            <option value="POST">POST</option>
+                            <option value="PUT">PUT</option>
+                            <option value="PATCH">PATCH</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className={labelClass}>Timeout (ms)</label>
+                          <input
+                            type="number"
+                            min={1000}
+                            max={60000}
+                            value={tool.endpoint.timeoutMs}
+                            onChange={(e) => {
+                              const customTools = [...form.tools.customTools];
+                              customTools[tIdx] = {
+                                ...customTools[tIdx],
+                                endpoint: {
+                                  ...customTools[tIdx].endpoint,
+                                  timeoutMs: parseInt(e.target.value, 10) || 10000,
+                                },
+                              };
+                              updateTools("customTools", customTools);
+                            }}
+                            className={inputClass}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <p className={labelClass}>Parameters</p>
+                        <div className="space-y-2">
+                          {Object.entries(tool.parameters.properties).map(
+                            ([paramName, paramDef]) => (
+                              <div key={paramName} className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={paramName}
+                                  onChange={(e) => {
+                                    const customTools = [...form.tools.customTools];
+                                    const oldProps = { ...customTools[tIdx].parameters.properties };
+                                    const val = oldProps[paramName];
+                                    delete oldProps[paramName];
+                                    oldProps[e.target.value] = val;
+                                    const required = customTools[tIdx].parameters.required.map(
+                                      (r) => (r === paramName ? e.target.value : r),
+                                    );
+                                    customTools[tIdx] = {
+                                      ...customTools[tIdx],
+                                      parameters: {
+                                        ...customTools[tIdx].parameters,
+                                        properties: oldProps,
+                                        required,
+                                      },
+                                    };
+                                    updateTools("customTools", customTools);
+                                  }}
+                                  placeholder="name"
+                                  className={`${inputClass} flex-1`}
+                                />
+                                <select
+                                  value={paramDef.type}
+                                  onChange={(e) => {
+                                    const customTools = [...form.tools.customTools];
+                                    const props = { ...customTools[tIdx].parameters.properties };
+                                    props[paramName] = { ...props[paramName], type: e.target.value };
+                                    customTools[tIdx] = {
+                                      ...customTools[tIdx],
+                                      parameters: {
+                                        ...customTools[tIdx].parameters,
+                                        properties: props,
+                                      },
+                                    };
+                                    updateTools("customTools", customTools);
+                                  }}
+                                  className={`${inputClass} w-28`}
+                                >
+                                  <option value="string">string</option>
+                                  <option value="number">number</option>
+                                  <option value="integer">integer</option>
+                                  <option value="boolean">boolean</option>
+                                </select>
+                                <input
+                                  type="text"
+                                  value={paramDef.description}
+                                  onChange={(e) => {
+                                    const customTools = [...form.tools.customTools];
+                                    const props = { ...customTools[tIdx].parameters.properties };
+                                    props[paramName] = {
+                                      ...props[paramName],
+                                      description: e.target.value,
+                                    };
+                                    customTools[tIdx] = {
+                                      ...customTools[tIdx],
+                                      parameters: {
+                                        ...customTools[tIdx].parameters,
+                                        properties: props,
+                                      },
+                                    };
+                                    updateTools("customTools", customTools);
+                                  }}
+                                  placeholder="description"
+                                  className={`${inputClass} flex-1`}
+                                />
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={tool.parameters.required.includes(paramName)}
+                                    onChange={(e) => {
+                                      const customTools = [...form.tools.customTools];
+                                      let required = [...customTools[tIdx].parameters.required];
+                                      if (e.target.checked) {
+                                        required.push(paramName);
+                                      } else {
+                                        required = required.filter((r) => r !== paramName);
+                                      }
+                                      customTools[tIdx] = {
+                                        ...customTools[tIdx],
+                                        parameters: {
+                                          ...customTools[tIdx].parameters,
+                                          required,
+                                        },
+                                      };
+                                      updateTools("customTools", customTools);
+                                    }}
+                                    className="h-4 w-4 rounded border-border text-primary focus:ring-primary/25"
+                                  />
+                                  <span className="text-xs text-muted-foreground">req</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const customTools = [...form.tools.customTools];
+                                    const props = { ...customTools[tIdx].parameters.properties };
+                                    delete props[paramName];
+                                    const required = customTools[tIdx].parameters.required.filter(
+                                      (r) => r !== paramName,
+                                    );
+                                    customTools[tIdx] = {
+                                      ...customTools[tIdx],
+                                      parameters: {
+                                        ...customTools[tIdx].parameters,
+                                        properties: props,
+                                        required,
+                                      },
+                                    };
+                                    updateTools("customTools", customTools);
+                                  }}
+                                  className="text-xs text-red-500 hover:text-red-700 px-1"
+                                >
+                                  x
+                                </button>
+                              </div>
+                            ),
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const customTools = [...form.tools.customTools];
+                              const props = { ...customTools[tIdx].parameters.properties };
+                              const key = `param${Object.keys(props).length + 1}`;
+                              props[key] = { type: "string", description: "" };
+                              customTools[tIdx] = {
+                                ...customTools[tIdx],
+                                parameters: {
+                                  ...customTools[tIdx].parameters,
+                                  properties: props,
+                                },
+                              };
+                              updateTools("customTools", customTools);
+                            }}
+                            className="text-xs text-primary hover:underline"
+                          >
+                            + Add parameter
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateTools("customTools", [
+                        ...form.tools.customTools,
+                        {
+                          name: "",
+                          description: "",
+                          parameters: { type: "object", properties: {}, required: [] },
+                          endpoint: { url: "", method: "POST", headers: {}, timeoutMs: 10000 },
+                        },
+                      ]);
+                    }}
+                    className="rounded-lg border border-dashed border-border px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary w-full"
+                  >
+                    + Add Custom Tool
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </Section>
 
         {/* Rate Limits */}
