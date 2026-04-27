@@ -6,9 +6,10 @@ import { buildSystemPrompt } from "../services/guardrails/system-prompt.js";
 import { scrubOutput } from "../services/guardrails/output-scrubber.js";
 import { streamChatCompletion } from "../services/ai-provider.js";
 import { createKnowledgeAssembler } from "../services/knowledge/index.js";
+import type { UrlFetcher } from "../services/knowledge/url-fetcher.js";
 
-export function createChatRouter(conversationStore: ConversationStore): RouterType {
-  const knowledgeAssembler = createKnowledgeAssembler();
+export function createChatRouter(conversationStore: ConversationStore, urlFetcher?: UrlFetcher): RouterType {
+  const knowledgeAssembler = createKnowledgeAssembler(urlFetcher);
   const router: RouterType = Router();
 
   router.post("/", async (req, res) => {

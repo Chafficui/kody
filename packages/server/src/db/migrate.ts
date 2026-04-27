@@ -57,6 +57,27 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_conversation_logs_site_id ON conversation_logs(site_id);
     `,
   },
+  {
+    version: 5,
+    name: "create_scrape_results",
+    up: `
+      CREATE TABLE IF NOT EXISTS scrape_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id TEXT NOT NULL,
+        source_index INTEGER NOT NULL,
+        url TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        content_preview TEXT,
+        content_length INTEGER DEFAULT 0,
+        word_count INTEGER DEFAULT 0,
+        error_message TEXT,
+        scraped_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(site_id, source_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_scrape_site ON scrape_results(site_id);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

@@ -19,6 +19,9 @@ import { errorHandler } from "./middleware/error-handler.js";
 import { SiteStore } from "./services/site-store.js";
 import { ConversationStore } from "./services/conversation-store.js";
 import { AdminAuthService } from "./services/admin/auth-service.js";
+import { UrlFetcher } from "./services/knowledge/url-fetcher.js";
+import { ScrapeStore } from "./services/scrape-store.js";
+import { createAdminScrapingRouter } from "./routes/admin/scraping.js";
 
 export interface AppDependencies {
   db: Database.Database;
@@ -34,6 +37,8 @@ export function createApp(
   const authService = new AdminAuthService(deps.db);
   const rateLimiter = deps.rateLimiter ?? new RateLimiter();
   const conversationStore = deps.conversationStore ?? new ConversationStore();
+  const urlFetcher = new UrlFetcher();
+  const scrapeStore = new ScrapeStore(deps.db, urlFetcher, siteStore);
 
   app.use(
     helmet({
@@ -65,13 +70,14 @@ export function createApp(
 
   const siteAuth = createSiteAuth(siteStore);
   const rateLimit = createRateLimitMiddleware(rateLimiter);
-  app.use("/api/chat", siteAuth, rateLimit, createChatRouter(conversationStore));
+  app.use("/api/chat", siteAuth, rateLimit, createChatRouter(conversationStore, urlFetcher));
   app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
 
   app.use("/api/admin", createAdminAuthRouter(authService));
 
   const adminAuth = createAdminAuth(authService);
   app.use("/api/admin/sites", adminAuth, createAdminSitesRouter(siteStore));
+  app.use("/api/admin/sites", adminAuth, createAdminScrapingRouter(scrapeStore));
   app.use("/api/admin/users", adminAuth, createAdminUsersRouter(authService));
   app.use("/api/admin/logs", adminAuth, createAdminLogsRouter());
 
