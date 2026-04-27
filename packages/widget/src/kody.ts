@@ -195,10 +195,13 @@ export class KodyWidget {
     this.isOpen = true;
     this.chatWindow.setOpen(true);
     setBubbleIcon(this.bubble, true);
-    requestAnimationFrame(() => {
-      this.chatWindow?.scrollToBottom();
-      this.chatWindow?.inputBar.input.focus();
-    });
+    const win = this.chatWindow;
+    const onEnd = () => {
+      win.element.removeEventListener("transitionend", onEnd);
+      win.scrollToBottom();
+      win.inputBar.input.focus();
+    };
+    win.element.addEventListener("transitionend", onEnd);
   }
 
   close(): void {
