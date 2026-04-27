@@ -57,56 +57,6 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_conversation_logs_site_id ON conversation_logs(site_id);
     `,
   },
-  {
-    version: 5,
-    name: "create_users",
-    up: `
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        plan TEXT NOT NULL DEFAULT 'free',
-        max_sites INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-    `,
-  },
-  {
-    version: 6,
-    name: "create_user_sessions",
-    up: `
-      CREATE TABLE IF NOT EXISTS user_sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        token TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token);
-    `,
-  },
-  {
-    version: 7,
-    name: "add_user_id_to_sites",
-    up: `
-      ALTER TABLE sites ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
-    `,
-  },
-  {
-    version: 8,
-    name: "add_email_verification",
-    up: `
-      ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
-      CREATE TABLE IF NOT EXISTS email_verification_tokens (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        token TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_email_verification_token ON email_verification_tokens(token);
-    `,
-  },
 ];
 
 export function migrate(db: Database.Database): void {

@@ -19,10 +19,6 @@ import { errorHandler } from "./middleware/error-handler.js";
 import { SiteStore } from "./services/site-store.js";
 import { ConversationStore } from "./services/conversation-store.js";
 import { AdminAuthService } from "./services/admin/auth-service.js";
-import { UserAuthService } from "./services/user/auth-service.js";
-import { createUserAuth } from "./middleware/user-auth.js";
-import { createUserAuthRouter } from "./routes/user/auth.js";
-import { createUserSitesRouter } from "./routes/user/sites.js";
 
 export interface AppDependencies {
   db: Database.Database;
@@ -32,11 +28,10 @@ export interface AppDependencies {
 
 export function createApp(
   deps: AppDependencies,
-): Express & { siteStore: SiteStore; authService: AdminAuthService; userAuthService: UserAuthService } {
+): Express & { siteStore: SiteStore; authService: AdminAuthService } {
   const app = express();
   const siteStore = new SiteStore(deps.db);
   const authService = new AdminAuthService(deps.db);
-  const userAuthService = new UserAuthService(deps.db);
   const rateLimiter = deps.rateLimiter ?? new RateLimiter();
   const conversationStore = deps.conversationStore ?? new ConversationStore();
 
@@ -80,11 +75,6 @@ export function createApp(
   app.use("/api/admin/users", adminAuth, createAdminUsersRouter(authService));
   app.use("/api/admin/logs", adminAuth, createAdminLogsRouter());
 
-  app.use("/api/auth", createUserAuthRouter(userAuthService));
-
-  const userAuth = createUserAuth(userAuthService);
-  app.use("/api/user/sites", userAuth, createUserSitesRouter(siteStore));
-
   // Serve admin SPA static files
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const adminDist = path.resolve(__dirname, "../../admin/dist");
@@ -98,11 +88,9 @@ export function createApp(
   const result = app as Express & {
     siteStore: SiteStore;
     authService: AdminAuthService;
-    userAuthService: UserAuthService;
   };
   result.siteStore = siteStore;
   result.authService = authService;
-  result.userAuthService = userAuthService;
 
   return result;
 }
