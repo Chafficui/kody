@@ -78,6 +78,41 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_scrape_site ON scrape_results(site_id);
     `,
   },
+  {
+    version: 6,
+    name: "create_knowledge_chunks",
+    up: `
+      CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id TEXT NOT NULL,
+        source_index INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        metadata TEXT,
+        embedding BLOB,
+        embedding_model TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_chunks_site ON knowledge_chunks(site_id);
+    `,
+  },
+  {
+    version: 7,
+    name: "create_embedding_jobs",
+    up: `
+      CREATE TABLE IF NOT EXISTS embedding_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        chunk_count INTEGER DEFAULT 0,
+        error_message TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_embedding_jobs_site ON embedding_jobs(site_id);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {

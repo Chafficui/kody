@@ -8,6 +8,7 @@ export {
   ticketProviderSchema,
   ticketsSchema,
   rateLimitSchema,
+  ragSchema,
   publicSiteConfigSchema,
   publicBrandingSchema,
   toPublicConfig,
@@ -20,6 +21,7 @@ export {
   type TicketProvider,
   type TicketsConfig,
   type RateLimitConfig,
+  type RagConfig,
   type PublicSiteConfig,
 } from "./site-config.js";
 

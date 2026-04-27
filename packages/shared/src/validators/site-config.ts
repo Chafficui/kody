@@ -89,9 +89,18 @@ export const knowledgeSourceSchema = z.discriminatedUnion("type", [
   faqKnowledgeSchema,
 ]);
 
+export const ragSchema = z.object({
+  enabled: z.boolean().default(false),
+  chunkSize: z.number().int().min(100).max(2000).default(500),
+  chunkOverlap: z.number().int().min(0).max(500).default(50),
+  topK: z.number().int().min(1).max(20).default(5),
+  similarityThreshold: z.number().min(0).max(1).default(0.3),
+});
+
 export const knowledgeSchema = z.object({
   sources: z.array(knowledgeSourceSchema).default([]),
   maxContextTokens: z.number().int().min(100).max(32000).default(4000),
+  rag: ragSchema.default({}),
 });
 
 const jiraProviderSchema = z.object({
@@ -187,6 +196,7 @@ export type KnowledgeConfig = z.infer<typeof knowledgeSchema>;
 export type TicketProvider = z.infer<typeof ticketProviderSchema>;
 export type TicketsConfig = z.infer<typeof ticketsSchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
+export type RagConfig = z.infer<typeof ragSchema>;
 
 export const publicBrandingSchema = brandingSchema;
 
