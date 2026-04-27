@@ -11,6 +11,7 @@ import {
 import { setSourceUrls } from "./utils/markdown.js";
 import { createTypingIndicator } from "./components/typing-indicator.js";
 import { createTicketForm } from "./components/ticket-form.js";
+import { createToolIndicator, type ToolIndicator } from "./components/tool-indicator.js";
 import {
   getSessionId,
   setSessionId,
@@ -118,6 +119,7 @@ export class KodyWidget {
     }
 
     this.saveStateOnUnload();
+    this.setupMobileHandlers();
 
     const showAttention = !savedState?.isOpen && this.messages.length === 0;
     this.stopAttention = startBubbleAttention(this.bubble, this.shadow, {
@@ -147,6 +149,50 @@ export class KodyWidget {
     const handler = () => this.saveState();
     window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
+  }
+
+  private setupMobileHandlers(): void {
+    if (!this.chatWindow) return;
+    const windowEl = this.chatWindow.element;
+    const isMobile = () => window.innerWidth <= 480;
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", () => {
+        if (!isMobile() || !this.isOpen) return;
+        windowEl.style.height = `${window.visualViewport!.height}px`;
+        this.chatWindow?.scrollToBottom();
+      });
+    }
+
+    const header = windowEl.querySelector(".kody-header") as HTMLElement | null;
+    if (header) {
+      let startY = 0;
+      let currentY = 0;
+
+      header.addEventListener("touchstart", (e: TouchEvent) => {
+        if (!isMobile()) return;
+        startY = e.touches[0].clientY;
+        currentY = startY;
+      }, { passive: true });
+
+      header.addEventListener("touchmove", (e: TouchEvent) => {
+        if (!isMobile()) return;
+        currentY = e.touches[0].clientY;
+        const delta = currentY - startY;
+        if (delta > 0) {
+          windowEl.style.transform = `translateY(${delta}px)`;
+        }
+      }, { passive: true });
+
+      header.addEventListener("touchend", () => {
+        if (!isMobile()) return;
+        const delta = currentY - startY;
+        windowEl.style.transform = "";
+        if (delta > 100) {
+          this.close();
+        }
+      });
+    }
   }
 
   open(): void {
@@ -236,6 +282,7 @@ export class KodyWidget {
     const streaming = createStreamingMessage();
     let typingRemoved = false;
     let streamedContent = "";
+    const toolIndicators = new Map<string, ToolIndicator>();
 
     this.abortController = new AbortController();
 
@@ -305,6 +352,27 @@ export class KodyWidget {
             this.appendAssistantMessage("Something went wrong. Please try again.");
             this.isStreaming = false;
             this.chatWindow.setLoading(false);
+            break;
+
+          case "tool_start": {
+            if (!typingRemoved) {
+              typing.remove();
+              typingRemoved = true;
+            }
+            const indicator = createToolIndicator(event.displayText);
+            toolIndicators.set(event.name, indicator);
+            this.chatWindow.messagesContainer.appendChild(indicator.element);
+            this.chatWindow.scrollToBottom();
+            break;
+          }
+
+          case "tool_end": {
+            const ind = toolIndicators.get(event.name);
+            if (ind) ind.finish();
+            break;
+          }
+
+          case "sources":
             break;
 
           case "ticket_prompt":

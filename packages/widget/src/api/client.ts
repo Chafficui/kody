@@ -32,7 +32,10 @@ export type ChatEvent =
   | { type: "error"; message: string }
   | { type: "rate_limited"; retryAfterSeconds: number }
   | { type: "blocked"; message: string }
-  | { type: "ticket_prompt"; message: string };
+  | { type: "ticket_prompt"; message: string }
+  | { type: "tool_start"; name: string; displayText: string }
+  | { type: "tool_end"; name: string }
+  | { type: "sources"; chunks: Array<{ title: string; url?: string; score: number }> };
 
 export class KodyApiClient {
   constructor(

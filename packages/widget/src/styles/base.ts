@@ -612,6 +612,47 @@ export const BASE_STYLES = /* css */ `
   line-height: 1.5;
 }
 
+/* ── Tool indicator ── */
+
+.kody-tool-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--kody-fg);
+  opacity: 0.6;
+  animation: kody-fade-in 0.2s ease;
+}
+
+.kody-tool-indicator--done {
+  opacity: 0.4;
+}
+
+.kody-tool-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--kody-fg);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: kody-spin 0.8s linear infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+}
+
+.kody-tool-spinner--done {
+  border: none;
+  animation: none;
+  font-size: 10px;
+  color: var(--kody-fg);
+}
+
+@keyframes kody-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Animations ── */
 
 .kody-fade-in {
@@ -637,18 +678,79 @@ export const BASE_STYLES = /* css */ `
     bottom: 0;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: 0;
   }
 
   .kody-bubble {
-    bottom: 16px;
-    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    right: calc(16px + env(safe-area-inset-right, 0px));
   }
 
   :host([position="left"]) .kody-bubble,
   .kody-bubble[data-position="left"] {
-    left: 16px;
+    left: calc(16px + env(safe-area-inset-left, 0px));
+  }
+
+  .kody-input-bar {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .kody-send-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .kody-header-btn {
+    padding: 10px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .kody-messages {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 480px) and (orientation: landscape) {
+  .kody-window {
+    width: 380px;
+    height: auto;
+    max-height: 100dvh;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    left: auto;
+    border-radius: var(--kody-radius) 0 0 var(--kody-radius);
+  }
+}
+
+/* ── Reduced motion ── */
+
+@media (prefers-reduced-motion: reduce) {
+  .kody-bubble,
+  .kody-window,
+  .kody-message,
+  .kody-tooltip {
+    transition: none;
+    animation: none;
+  }
+
+  .kody-typing span {
+    animation: none;
+    opacity: 0.6;
+  }
+
+  .kody-tool-spinner {
+    animation: none;
+    border-style: dotted;
+  }
+
+  .kody-bubble--wiggle {
+    animation: none;
   }
 }
 `;
