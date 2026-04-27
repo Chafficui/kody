@@ -51,7 +51,11 @@ export function createKnowledgeAssembler(
             entry = { ...source };
             break;
           case "url": {
-            const fetchedContent = await urlFetcher.fetch(source.url, source.refreshIntervalHours);
+            const fetchedContent = await urlFetcher.fetch(
+              source.url,
+              source.refreshIntervalHours,
+              source.enableJsRendering,
+            );
             entry = { ...source, fetchedContent: fetchedContent ?? undefined };
             break;
           }

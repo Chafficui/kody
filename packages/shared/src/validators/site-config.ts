@@ -60,6 +60,7 @@ const urlKnowledgeSchema = z.object({
   url: z.string().url(),
   title: z.string().max(200).optional(),
   refreshIntervalHours: z.number().int().min(1).max(720).default(24),
+  enableJsRendering: z.boolean().default(true),
 });
 
 const fileKnowledgeSchema = z.object({

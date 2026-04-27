@@ -80,7 +80,7 @@ describe("KnowledgeAssembler", () => {
     expect(result).toHaveLength(1);
     const urlSource = result[0] as EnrichedKnowledgeSource & { type: "url" };
     expect(urlSource.fetchedContent).toBe("Fetched page content");
-    expect(mockUrlFetcher.fetch).toHaveBeenCalledWith("https://example.com/docs", 24);
+    expect(mockUrlFetcher.fetch).toHaveBeenCalledWith("https://example.com/docs", 24, undefined);
   });
 
   it("reads content for file sources", async () => {
