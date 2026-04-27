@@ -42,7 +42,7 @@ export function createApp(
       crossOriginOpenerPolicy: false,
     }),
   );
-  app.use(express.json({ limit: "16kb" }));
+  app.use(express.json({ limit: "2mb" }));
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
