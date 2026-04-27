@@ -9,7 +9,7 @@ Embeddable AI chat assistant widget. Open source (MIT).
 - `packages/shared` — Zod schemas, types, constants (tsc build)
 - `packages/server` — Express 5 proxy + guardrails + admin API (tsx for dev, tsc for build)
 - `packages/widget` — Shadow DOM chat bubble, Vite IIFE build (~30KB gzip target)
-- `packages/web` — Next.js + Tailwind 4 marketing/docs/admin site
+- `packages/admin` — Vite SPA admin dashboard served by the server at /admin
 
 ## Commands
 

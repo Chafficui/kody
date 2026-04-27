@@ -32,11 +32,8 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Build packages (skip web to avoid Next.js SIGSEGV in CI)
-        run: |
-          pnpm --filter @kody/shared run build
-          pnpm --filter @kody/widget run build
-          pnpm --filter @kody/server run build
+      - name: Build packages
+        run: pnpm build
 
   bundle-size:
     runs-on: ubuntu-latest

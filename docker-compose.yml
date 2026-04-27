@@ -22,17 +22,6 @@ services:
     volumes:
       - server_data:/data
 
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-    ports:
-      - "3000:3000"
-    depends_on:
-      - server
-    environment:
-      - NEXT_PUBLIC_KODY_API_URL=http://localhost:3456
-
 volumes:
   ollama_models:
   server_data:

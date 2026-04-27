@@ -19,7 +19,7 @@ format:
 	pnpm run format
 
 clean:
-	rm -rf packages/*/dist packages/web/.next
+	rm -rf packages/*/dist
 
 docker-build:
 	docker compose build
