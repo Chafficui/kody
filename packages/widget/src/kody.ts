@@ -111,11 +111,6 @@ export class KodyWidget {
     const savedState = getWidgetState(this.widgetConfig.siteId);
     if (savedState?.isOpen) {
       this.open();
-      requestAnimationFrame(() => {
-        if (this.chatWindow) {
-          this.chatWindow.messagesContainer.scrollTop = savedState.scrollTop;
-        }
-      });
     }
 
     this.saveStateOnUnload();
@@ -200,7 +195,10 @@ export class KodyWidget {
     this.isOpen = true;
     this.chatWindow.setOpen(true);
     setBubbleIcon(this.bubble, true);
-    this.chatWindow.inputBar.input.focus();
+    requestAnimationFrame(() => {
+      this.chatWindow?.scrollToBottom();
+      this.chatWindow?.inputBar.input.focus();
+    });
   }
 
   close(): void {
