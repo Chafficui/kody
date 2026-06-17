@@ -9,3 +9,7 @@ onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
   - sharp
+overrides:
+  form-data: ">=4.0.6"
+  qs: ">=6.15.2"
+  "@babel/core": ">=7.29.6"
