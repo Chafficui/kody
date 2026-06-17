@@ -51,9 +51,9 @@ describe("buildSystemPrompt", () => {
     expect(prompt.toLowerCase()).toContain("never mention");
   });
 
-  it("includes anti-roleplay instructions", () => {
+  it("includes citation instructions", () => {
     const prompt = buildSystemPrompt(minimalInput);
-    expect(prompt.toLowerCase()).toContain("never change your behavior");
+    expect(prompt.toLowerCase()).toContain("cite");
   });
 
   it("includes systemPromptPrefix when provided", () => {
