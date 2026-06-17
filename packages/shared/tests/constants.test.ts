@@ -1,23 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AI_PROVIDER_NAMES } from "../src/constants/provider-names.js";
 import { DEFAULT_BLOCKED_INPUT_PATTERNS } from "../src/constants/blocked-patterns.js";
-
-describe("AI_PROVIDER_NAMES", () => {
-  it("contains known provider names", () => {
-    expect(AI_PROVIDER_NAMES).toContain("ChatGPT");
-    expect(AI_PROVIDER_NAMES).toContain("Claude");
-    expect(AI_PROVIDER_NAMES).toContain("OpenAI");
-    expect(AI_PROVIDER_NAMES).toContain("Anthropic");
-    expect(AI_PROVIDER_NAMES).toContain("Gemini");
-    expect(AI_PROVIDER_NAMES).toContain("LLaMA");
-    expect(AI_PROVIDER_NAMES).toContain("Mistral");
-  });
-
-  it("has no duplicates", () => {
-    const unique = new Set(AI_PROVIDER_NAMES.map((n) => n.toLowerCase()));
-    expect(unique.size).toBe(AI_PROVIDER_NAMES.length);
-  });
-});
 
 describe("DEFAULT_BLOCKED_INPUT_PATTERNS", () => {
   it("contains patterns for prompt injection", () => {

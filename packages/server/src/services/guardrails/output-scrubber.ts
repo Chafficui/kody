@@ -1,5 +1,3 @@
-import { AI_PROVIDER_NAMES } from "@kody/shared";
-
 export interface OutputScrubberConfig {
   assistantName: string;
   enableOutputScrubbing: boolean;
@@ -12,14 +10,6 @@ export interface ScrubResult {
   blocked: boolean;
   reason?: string;
 }
-
-function buildProviderNameRegex(): RegExp {
-  const escaped = AI_PROVIDER_NAMES.map((name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const sorted = escaped.sort((a: string, b: string) => b.length - a.length);
-  return new RegExp(`\\b(${sorted.join("|")})\\b`, "gi");
-}
-
-const PROVIDER_REGEX = buildProviderNameRegex();
 
 function detectSystemPromptLeak(text: string, fragments: string[]): boolean {
   const lowerText = text.toLowerCase();
@@ -68,7 +58,5 @@ export function scrubOutput(text: string, config: OutputScrubberConfig): ScrubRe
     }
   }
 
-  const scrubbed = text.replace(PROVIDER_REGEX, config.assistantName);
-
-  return { content: scrubbed, blocked: false };
+  return { content: text, blocked: false };
 }

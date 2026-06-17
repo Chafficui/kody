@@ -16,77 +16,6 @@ const defaultConfig: OutputScrubberConfig = {
 };
 
 describe("scrubOutput", () => {
-  describe("AI provider name scrubbing", () => {
-    it("replaces 'ChatGPT' with assistant name", () => {
-      const result = scrubOutput("As ChatGPT, I can help you with that.", defaultConfig);
-      expect(result.content).not.toContain("ChatGPT");
-      expect(result.content).toContain("HelpBot");
-    });
-
-    it("replaces 'GPT-4' with assistant name", () => {
-      const result = scrubOutput("I'm based on GPT-4 technology.", defaultConfig);
-      expect(result.content).not.toContain("GPT-4");
-    });
-
-    it("replaces 'OpenAI' with assistant name", () => {
-      const result = scrubOutput("I was created by OpenAI.", defaultConfig);
-      expect(result.content).not.toContain("OpenAI");
-    });
-
-    it("replaces 'Claude' with assistant name", () => {
-      const result = scrubOutput("As Claude, I'm here to help.", defaultConfig);
-      expect(result.content).not.toContain("Claude");
-      expect(result.content).toContain("HelpBot");
-    });
-
-    it("replaces 'Anthropic' with assistant name", () => {
-      const result = scrubOutput("Made by Anthropic.", defaultConfig);
-      expect(result.content).not.toContain("Anthropic");
-    });
-
-    it("replaces 'Gemini' with assistant name", () => {
-      const result = scrubOutput("I'm Google's Gemini model.", defaultConfig);
-      expect(result.content).not.toContain("Gemini");
-    });
-
-    it("replaces 'LLaMA' with assistant name", () => {
-      const result = scrubOutput("Based on Meta's LLaMA model.", defaultConfig);
-      expect(result.content).not.toContain("LLaMA");
-    });
-
-    it("replaces 'Mistral' with assistant name", () => {
-      const result = scrubOutput("Powered by Mistral AI.", defaultConfig);
-      expect(result.content).not.toContain("Mistral");
-    });
-
-    it("replaces 'Ollama' with assistant name", () => {
-      const result = scrubOutput("Running on Ollama.", defaultConfig);
-      expect(result.content).not.toContain("Ollama");
-    });
-
-    it("handles multiple provider names in one message", () => {
-      const result = scrubOutput(
-        "Unlike ChatGPT or Claude, I use Mistral under the hood.",
-        defaultConfig,
-      );
-      expect(result.content).not.toContain("ChatGPT");
-      expect(result.content).not.toContain("Claude");
-      expect(result.content).not.toContain("Mistral");
-    });
-
-    it("is case-insensitive for common variants", () => {
-      const result = scrubOutput("I am chatgpt, made by openai.", defaultConfig);
-      expect(result.content).not.toMatch(/chatgpt/i);
-      expect(result.content).not.toMatch(/openai/i);
-    });
-
-    it("preserves surrounding text", () => {
-      const result = scrubOutput("Hello! I'm ChatGPT. How can I help?", defaultConfig);
-      expect(result.content).toContain("Hello!");
-      expect(result.content).toContain("How can I help?");
-    });
-  });
-
   describe("system prompt leak detection", () => {
     it("detects direct system prompt regurgitation", () => {
       const result = scrubOutput(
@@ -147,7 +76,7 @@ describe("scrubOutput", () => {
     });
   });
 
-  describe("scrubbing disabled", () => {
+  describe("pass-through", () => {
     it("passes through unchanged when disabled", () => {
       const config = { ...defaultConfig, enableOutputScrubbing: false };
       const text = "I am ChatGPT, made by OpenAI.";
@@ -155,18 +84,17 @@ describe("scrubOutput", () => {
       expect(result.content).toBe(text);
       expect(result.blocked).toBe(false);
     });
-  });
 
-  describe("edge cases", () => {
+    it("passes through provider names without modification", () => {
+      const result = scrubOutput("I was made by OpenAI using GPT-4.", defaultConfig);
+      expect(result.content).toBe("I was made by OpenAI using GPT-4.");
+      expect(result.blocked).toBe(false);
+    });
+
     it("handles empty string", () => {
       const result = scrubOutput("", defaultConfig);
       expect(result.content).toBe("");
       expect(result.blocked).toBe(false);
-    });
-
-    it("handles string with only provider names", () => {
-      const result = scrubOutput("ChatGPT", defaultConfig);
-      expect(result.content).toContain("HelpBot");
     });
   });
 });
