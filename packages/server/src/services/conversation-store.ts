@@ -93,6 +93,10 @@ export class ConversationStore {
     }
   }
 
+  delete(sessionId: string): boolean {
+    return this.conversations.delete(sessionId);
+  }
+
   destroy(): void {
     clearInterval(this.cleanupInterval);
     this.conversations.clear();

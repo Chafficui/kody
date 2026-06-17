@@ -22,7 +22,7 @@ if (!existing) {
   try {
     app.siteStore.createSite({
       siteId: "kody-website",
-      allowedOrigins: ["http://localhost:3000", "http://localhost:3001", "https://kody.codai.app"],
+      allowedOrigins: ["http://localhost:3000", "http://localhost:3001", "http://localhost:4567", "https://kody.codai.app"],
       branding: {
         name: "Kody",
         tagline: "AI Assistant",
@@ -39,6 +39,15 @@ if (!existing) {
         welcomeMessage:
           "Hi! I'm Kody, an open-source AI chat assistant. Ask me anything about adding AI to your website!",
         inputPlaceholder: "Ask me about Kody...",
+        bubbleIcon: "chat",
+        bubbleSize: "md",
+        theme: "light",
+        borderRadius: 12,
+      },
+      personality: {
+        tone: "friendly",
+        formality: "balanced",
+        responseLength: "balanced",
       },
       ai: {
         baseUrl: "http://localhost:11434/v1",
@@ -121,6 +130,17 @@ Embedding: Add a script tag pointing to your server's /widget.js with data-site-
         requiredFields: ["name", "email", "description"],
       },
       rateLimit: { messagesPerMinute: 10, messagesPerHour: 60, messagesPerDay: 200 },
+      compliance: {
+        aiDisclosureEnabled: true,
+        aiDisclosureMessage: "You are chatting with an AI assistant.",
+        conversationDeletionEnabled: true,
+      },
+      conversationStarters: [
+        "What is Kody?",
+        "How do I embed the widget?",
+        "What AI providers are supported?",
+        "Is Kody free to use?",
+      ],
       enabled: true,
     });
     console.log("Demo site 'kody-website' created");

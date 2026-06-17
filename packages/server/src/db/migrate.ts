@@ -113,6 +113,21 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_embedding_jobs_site ON embedding_jobs(site_id);
     `,
   },
+  {
+    version: 8,
+    name: "create_feedback",
+    up: `
+      CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        message_index INTEGER NOT NULL,
+        rating TEXT NOT NULL CHECK(rating IN ('up', 'down')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_feedback_site ON feedback(site_id);
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
