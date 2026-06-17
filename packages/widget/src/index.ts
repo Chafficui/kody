@@ -1,5 +1,8 @@
 import { KodyWidget, type KodyWidgetConfig } from "./kody.js";
 
+// Capture before IIFE wrapper nullifies it
+const _currentScript = document.currentScript as HTMLScriptElement | null;
+
 interface KodyEmbedConfig {
   siteId: string;
   serverUrl?: string;
@@ -20,7 +23,10 @@ declare global {
 interface KodyPublicAPI {
   open(): void;
   close(): void;
+  toggle(): void;
   destroy(): void;
+  onOpen(callback: () => void): void;
+  onClose(callback: () => void): void;
 }
 
 function getConfig(): KodyEmbedConfig | null {
@@ -28,11 +34,10 @@ function getConfig(): KodyEmbedConfig | null {
     return window.KodyConfig;
   }
 
-  const script = document.currentScript as HTMLScriptElement | null;
-  if (script?.dataset.siteId) {
+  if (_currentScript?.dataset.siteId) {
     return {
-      siteId: script.dataset.siteId,
-      serverUrl: script.dataset.serverUrl,
+      siteId: _currentScript.dataset.siteId,
+      serverUrl: _currentScript.dataset.serverUrl,
     };
   }
 
@@ -42,10 +47,9 @@ function getConfig(): KodyEmbedConfig | null {
 function resolveServerUrl(config: KodyEmbedConfig): string {
   if (config.serverUrl) return config.serverUrl;
 
-  const script = document.currentScript as HTMLScriptElement | null;
-  if (script?.src) {
+  if (_currentScript?.src) {
     try {
-      const url = new URL(script.src);
+      const url = new URL(_currentScript.src);
       return url.origin;
     } catch {
       // fall through
@@ -75,7 +79,10 @@ function init(): void {
   window.Kody = {
     open: () => widget.open(),
     close: () => widget.close(),
+    toggle: () => widget.toggle(),
     destroy: () => widget.destroy(),
+    onOpen: (cb: () => void) => widget.onOpen(cb),
+    onClose: (cb: () => void) => widget.onClose(cb),
   };
 
   widget.init();

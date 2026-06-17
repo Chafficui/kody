@@ -56,7 +56,7 @@ function sanitizeNode(node: Node): void {
   }
 }
 
-const CITE_RE = /\[(\d+)\]/g;
+const CITE_RE = /\[(\d+)\]|\((\d+)\)/g;
 
 let sourceUrls: Map<string, string> | null = null;
 
@@ -88,7 +88,7 @@ function linkifyCitations(root: Node): void {
       if (match.index > lastIdx) {
         parts.push(document.createTextNode(text.slice(lastIdx, match.index)));
       }
-      const num = match[1];
+      const num = match[1] || match[2];
       const url = sourceUrls!.get(num);
       if (url) {
         const a = document.createElement("a");
@@ -117,6 +117,26 @@ function linkifyCitations(root: Node): void {
   }
 }
 
+function addCopyButtons(root: DocumentFragment): void {
+  const preBlocks = root.querySelectorAll("pre");
+  for (const pre of preBlocks) {
+    const btn = document.createElement("button");
+    btn.className = "kody-copy-btn";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", () => {
+      const code = pre.querySelector("code");
+      const text = code ? code.textContent || "" : pre.textContent || "";
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "Copied!";
+        setTimeout(() => {
+          btn.textContent = "Copy";
+        }, 2000);
+      });
+    });
+    pre.appendChild(btn);
+  }
+}
+
 export function renderMarkdown(input: string): DocumentFragment {
   const html = marked.parse(input, { async: false }) as string;
 
@@ -130,6 +150,7 @@ export function renderMarkdown(input: string): DocumentFragment {
   }
 
   linkifyCitations(frag);
+  addCopyButtons(frag);
 
   return frag;
 }

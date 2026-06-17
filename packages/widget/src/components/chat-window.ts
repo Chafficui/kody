@@ -10,6 +10,8 @@ export interface ChatWindowOptions {
   onClose: () => void;
   onSend: (message: string) => void;
   onNewChat: () => void;
+  onDeleteChat?: () => void;
+  onToggleSidebar?: () => void;
 }
 
 export interface ChatWindow {
@@ -82,11 +84,40 @@ function createSendSvg(): SVGSVGElement {
   return svg;
 }
 
+function createMenuSvg(): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+
+  const line1 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line1.setAttribute("x1", "3"); line1.setAttribute("y1", "6");
+  line1.setAttribute("x2", "21"); line1.setAttribute("y2", "6");
+  svg.appendChild(line1);
+
+  const line2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line2.setAttribute("x1", "3"); line2.setAttribute("y1", "12");
+  line2.setAttribute("x2", "21"); line2.setAttribute("y2", "12");
+  svg.appendChild(line2);
+
+  const line3 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line3.setAttribute("x1", "3"); line3.setAttribute("y1", "18");
+  line3.setAttribute("x2", "21"); line3.setAttribute("y2", "18");
+  svg.appendChild(line3);
+
+  return svg;
+}
+
 /**
  * Create the main chat window.
  */
 export function createChatWindow(options: ChatWindowOptions): ChatWindow {
-  const { name, tagline, position, onClose, onSend, onNewChat } = options;
+  const { name, tagline, position, onClose, onSend, onNewChat, onDeleteChat, onToggleSidebar } = options;
 
   // ── Header ───────────────────────────────────────────────────────────────
   const titleEl = el("span", { class: "kody-header-name" }, [name]);
@@ -113,11 +144,54 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
   closeBtn.appendChild(createCloseSvg());
   on(closeBtn, "click", () => onClose());
 
-  const headerActions = el("div", { class: "kody-header-actions" }, [newChatBtn, closeBtn]);
-  const header = el("div", { class: "kody-header" }, [headerInfo, headerActions]);
+  const actionBtns: Node[] = [];
+  if (onToggleSidebar) {
+    const sidebarBtn = el("button", {
+      class: "kody-header-btn",
+      "aria-label": "Conversations",
+      title: "Conversations",
+    });
+    sidebarBtn.appendChild(createMenuSvg());
+    on(sidebarBtn, "click", () => onToggleSidebar());
+    actionBtns.push(sidebarBtn);
+  }
+  actionBtns.push(newChatBtn);
+  if (onDeleteChat) {
+    const deleteBtn = el("button", {
+      class: "kody-header-btn",
+      "aria-label": "Delete conversation",
+      title: "Delete conversation",
+    });
+    const deleteSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    deleteSvg.setAttribute("width", "16");
+    deleteSvg.setAttribute("height", "16");
+    deleteSvg.setAttribute("viewBox", "0 0 24 24");
+    deleteSvg.setAttribute("fill", "none");
+    deleteSvg.setAttribute("stroke", "currentColor");
+    deleteSvg.setAttribute("stroke-width", "2");
+    deleteSvg.setAttribute("stroke-linecap", "round");
+    deleteSvg.setAttribute("stroke-linejoin", "round");
+    const deletePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    deletePath.setAttribute("d", "M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2");
+    deleteSvg.appendChild(deletePath);
+    deleteBtn.appendChild(deleteSvg);
+    on(deleteBtn, "click", () => onDeleteChat());
+    actionBtns.push(deleteBtn);
+  }
+  actionBtns.push(closeBtn);
+  const headerActions = el("div", { class: "kody-header-actions" }, []);
+  for (const btn of actionBtns) {
+    headerActions.appendChild(btn);
+  }
+  const header = el("div", { class: "kody-header", role: "banner" }, [headerInfo, headerActions]);
 
   // ── Messages container ───────────────────────────────────────────────────
-  const messagesContainer = el("div", { class: "kody-messages" });
+  const messagesContainer = el("div", {
+    class: "kody-messages",
+    role: "log",
+    "aria-label": "Chat messages",
+    "aria-live": "polite",
+  });
 
   // ── Input bar ────────────────────────────────────────────────────────────
   const input = document.createElement("textarea");
@@ -165,7 +239,11 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
   on(sendBtn, "click", () => doSend());
 
   // ── Assemble window ──────────────────────────────────────────────────────
-  const windowEl = el("div", { class: "kody-window" }, [header, messagesContainer, inputBar]);
+  const windowEl = el("div", {
+    class: "kody-window",
+    role: "dialog",
+    "aria-label": `Chat with ${name}`,
+  }, [header, messagesContainer, inputBar]);
 
   if (position === "bottom-left") {
     windowEl.setAttribute("data-position", "left");

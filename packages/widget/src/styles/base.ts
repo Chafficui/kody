@@ -9,10 +9,9 @@ export const BASE_STYLES = /* css */ `
 
 :host {
   --kody-position: right;
-  --kody-radius: 12px;
   --kody-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
   --kody-shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.18);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--kody-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
   font-size: 14px;
   line-height: 1.5;
   color: var(--kody-fg);
@@ -87,7 +86,7 @@ export const BASE_STYLES = /* css */ `
   padding: 10px 32px 10px 14px;
   border-radius: 12px;
   font-size: 14px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: inherit;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   z-index: 9998;
   opacity: 0;
@@ -366,17 +365,10 @@ export const BASE_STYLES = /* css */ `
 }
 
 .kody-citation {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
+  display: inline;
+  font-size: 10px;
   font-weight: 600;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 4px;
-  background: var(--kody-primary);
-  color: var(--kody-primary-fg);
+  color: var(--kody-primary);
   text-decoration: none;
   vertical-align: super;
   line-height: 1;
@@ -385,8 +377,8 @@ export const BASE_STYLES = /* css */ `
 }
 
 .kody-citation:hover {
-  opacity: 0.8;
-  text-decoration: none;
+  opacity: 0.7;
+  text-decoration: underline;
 }
 
 .kody-message--user .kody-message-content a {
@@ -596,7 +588,7 @@ export const BASE_STYLES = /* css */ `
   text-align: center;
   padding: 32px 24px;
   flex: 1 1 auto;
-  gap: 8px;
+  gap: 12px;
   color: var(--kody-fg);
   opacity: 0.7;
 }
@@ -610,6 +602,164 @@ export const BASE_STYLES = /* css */ `
 .kody-welcome-text {
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* ── AI Disclosure (Article 50) ── */
+
+.kody-ai-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 1;
+  color: var(--kody-fg);
+  text-align: left;
+  width: 100%;
+}
+
+.kody-ai-disclosure-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+/* ── Conversation starters ── */
+
+.kody-starters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.kody-starter-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--kody-bg);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--kody-fg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  opacity: 1;
+}
+
+.kody-starter-btn:hover {
+  border-color: var(--kody-primary);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ── Follow-up suggestions ── */
+
+.kody-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 14px 8px;
+}
+
+.kody-suggestion-btn {
+  padding: 6px 12px;
+  background: var(--kody-bg);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 16px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--kody-primary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kody-suggestion-btn:hover {
+  border-color: var(--kody-primary);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ── Feedback buttons ── */
+
+.kody-feedback {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.kody-message:hover .kody-feedback,
+.kody-feedback--voted {
+  opacity: 1;
+}
+
+.kody-feedback-btn {
+  background: none;
+  border: none;
+  padding: 3px 5px;
+  cursor: pointer;
+  color: var(--kody-fg);
+  opacity: 0.35;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.kody-feedback-btn:hover {
+  opacity: 0.7;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.kody-feedback-btn:disabled {
+  cursor: default;
+}
+
+.kody-feedback-btn--active {
+  opacity: 1 !important;
+  color: var(--kody-primary);
+}
+
+/* ── Source citations ── */
+
+.kody-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.kody-sources-label {
+  color: var(--kody-fg);
+  opacity: 0.5;
+  font-weight: 500;
+}
+
+.kody-source-link {
+  color: var(--kody-primary);
+  text-decoration: none;
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+  font-size: 11px;
+  transition: background 0.15s ease;
+}
+
+a.kody-source-link:hover {
+  background: rgba(0, 0, 0, 0.08);
+  text-decoration: underline;
 }
 
 /* ── Tool indicator ── */
@@ -666,6 +816,132 @@ export const BASE_STYLES = /* css */ `
   to {
     opacity: 1;
   }
+}
+
+/* ── Chat sidebar ── */
+
+.kody-sidebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  background: var(--kody-bg);
+  border-right: 1px solid rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+  border-radius: var(--kody-radius) 0 0 var(--kody-radius);
+}
+
+.kody-sidebar--open {
+  transform: translateX(0);
+}
+
+.kody-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.kody-sidebar-close {
+  background: none;
+  border: none;
+  color: var(--kody-fg);
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.5;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.kody-sidebar-close:hover { opacity: 1; }
+
+.kody-sidebar-new {
+  margin: 10px 12px;
+  padding: 8px 12px;
+  background: var(--kody-primary);
+  color: var(--kody-primary-fg);
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+.kody-sidebar-new:hover { opacity: 0.9; }
+
+.kody-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.kody-sidebar-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  gap: 8px;
+  border-left: 3px solid transparent;
+}
+
+.kody-sidebar-item:hover { background: rgba(0, 0, 0, 0.04); }
+
+.kody-sidebar-item--active {
+  border-left-color: var(--kody-primary);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.kody-sidebar-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.kody-sidebar-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kody-sidebar-item-time {
+  font-size: 11px;
+  opacity: 0.5;
+  margin-top: 2px;
+}
+
+.kody-sidebar-item-delete {
+  background: none;
+  border: none;
+  color: var(--kody-fg);
+  opacity: 0;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+
+.kody-sidebar-item:hover .kody-sidebar-item-delete { opacity: 0.4; }
+.kody-sidebar-item-delete:hover { opacity: 0.8 !important; }
+
+.kody-sidebar-empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 13px;
+  opacity: 0.5;
 }
 
 /* ── Responsive: full screen on mobile ── */
@@ -752,7 +1028,63 @@ export const BASE_STYLES = /* css */ `
   .kody-bubble--wiggle {
     animation: none;
   }
+
+  .kody-bubble--pulse {
+    animation: none;
+  }
 }
+
+/* ── Bubble sizes ── */
+
+.kody-bubble[data-size="sm"] { width: 48px; height: 48px; }
+.kody-bubble[data-size="sm"] svg { width: 20px; height: 20px; }
+.kody-bubble[data-size="lg"] { width: 64px; height: 64px; }
+.kody-bubble[data-size="lg"] svg { width: 28px; height: 28px; }
+
+/* ── Pulse animation on bubble ── */
+
+@keyframes kody-pulse {
+  0% { box-shadow: 0 0 0 0 var(--kody-primary); }
+  70% { box-shadow: 0 0 0 12px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.kody-bubble--pulse { animation: kody-pulse 1.5s ease-out; }
+
+/* ── Unread badge ── */
+
+.kody-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; border-radius: 9px; background: #ef4444; color: white; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; padding: 0 5px; border: 2px solid white; animation: kody-msg-in 0.2s ease; }
+.kody-badge:empty { display: none; }
+
+/* ── Custom icon in bubble ── */
+
+.kody-bubble img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+
+/* ── Code block copy button ── */
+
+.kody-message-content pre { position: relative; }
+.kody-copy-btn { position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px; font-family: inherit; background: rgba(0,0,0,0.1); border: none; border-radius: 4px; color: inherit; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.kody-message-content pre:hover .kody-copy-btn { opacity: 1; }
+
+/* ── Table styling ── */
+
+.kody-message-content table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+.kody-message-content th, .kody-message-content td { border: 1px solid rgba(0,0,0,0.1); padding: 6px 10px; text-align: left; }
+.kody-message-content th { background: rgba(0,0,0,0.04); font-weight: 600; }
+
+/* ── Dark theme overrides ── */
+
+:host([data-theme="dark"]) { --kody-bg: #1a1a2e; --kody-fg: #e4e4e7; --kody-bubble-bg: #2a2a3e; }
+:host([data-theme="dark"]) .kody-message-content code { background: rgba(255,255,255,0.1); }
+:host([data-theme="dark"]) .kody-message-content pre { background: rgba(255,255,255,0.08); }
+:host([data-theme="dark"]) .kody-input-bar { border-top-color: rgba(255,255,255,0.1); }
+:host([data-theme="dark"]) .kody-ticket-form input, :host([data-theme="dark"]) .kody-ticket-form textarea { border-color: rgba(255,255,255,0.15); }
+:host([data-theme="dark"]) .kody-starter-btn { border-color: rgba(255,255,255,0.15); }
+:host([data-theme="dark"]) .kody-starter-btn:hover { background: rgba(255,255,255,0.05); }
+:host([data-theme="dark"]) .kody-suggestion-btn { border-color: rgba(255,255,255,0.15); }
+:host([data-theme="dark"]) .kody-suggestion-btn:hover { background: rgba(255,255,255,0.05); }
+:host([data-theme="dark"]) .kody-copy-btn { background: rgba(255,255,255,0.15); }
+:host([data-theme="dark"]) .kody-message-content th { background: rgba(255,255,255,0.08); }
+:host([data-theme="dark"]) .kody-message-content th, :host([data-theme="dark"]) .kody-message-content td { border-color: rgba(255,255,255,0.15); }
 `;
 
 export function createStyleSheet(themeVars: string): CSSStyleSheet {

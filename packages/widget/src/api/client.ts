@@ -16,12 +16,29 @@ export interface PublicSiteConfig {
     position: "bottom-right" | "bottom-left";
     welcomeMessage: string;
     inputPlaceholder: string;
+    bubbleIcon: "chat" | "headset" | "robot" | "custom";
+    bubbleIconUrl?: string;
+    bubbleSize: "sm" | "md" | "lg";
+    theme: "light" | "dark" | "auto";
+    borderRadius: number;
+    fontFamily?: string;
   };
   tickets: {
     enabled: boolean;
     promptMessage: string;
     requiredFields: string[];
   };
+  personality: {
+    tone: "friendly" | "professional" | "casual";
+    formality: "formal" | "informal" | "balanced";
+    responseLength: "concise" | "balanced" | "detailed";
+  };
+  compliance: {
+    aiDisclosureEnabled: boolean;
+    aiDisclosureMessage: string;
+    conversationDeletionEnabled: boolean;
+  };
+  conversationStarters: string[];
   sourceUrls?: Record<string, string>;
 }
 
@@ -35,7 +52,8 @@ export type ChatEvent =
   | { type: "ticket_prompt"; message: string }
   | { type: "tool_start"; name: string; displayText: string }
   | { type: "tool_end"; name: string }
-  | { type: "sources"; chunks: Array<{ title: string; url?: string; score: number }> };
+  | { type: "sources"; chunks: Array<{ title: string; url?: string; score: number }> }
+  | { type: "suggestions"; suggestions: string[] };
 
 export class KodyApiClient {
   constructor(
@@ -49,6 +67,41 @@ export class KodyApiClient {
       throw new Error(`Failed to fetch config: ${res.status} ${res.statusText}`);
     }
     return res.json() as Promise<PublicSiteConfig>;
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: { "x-kody-site-id": this.siteId },
+      });
+    } catch {
+      // best-effort deletion
+    }
+  }
+
+  async sendFeedback(
+    sessionId: string,
+    messageIndex: number,
+    rating: "up" | "down",
+  ): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-kody-site-id": this.siteId,
+        },
+        body: JSON.stringify({
+          siteId: this.siteId,
+          sessionId,
+          messageIndex,
+          rating,
+        }),
+      });
+    } catch {
+      // best-effort feedback
+    }
   }
 
   async sendMessage(

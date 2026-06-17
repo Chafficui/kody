@@ -100,3 +100,74 @@ export function generateSessionId(): string {
     return v.toString(16);
   });
 }
+
+// ── Multi-chat conversation storage ──────────────────────────────────────
+
+export interface Conversation {
+  id: string;
+  sessionId: string | null;
+  title: string;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+function conversationsKey(siteId: string): string {
+  return `kody_conversations_${siteId}`;
+}
+
+function activeConversationKey(siteId: string): string {
+  return `kody_active_conversation_${siteId}`;
+}
+
+export function getConversations(siteId: string): Conversation[] {
+  try {
+    const raw = localStorage.getItem(conversationsKey(siteId));
+    if (!raw) return [];
+    const convos = JSON.parse(raw) as Conversation[];
+    return convos.sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [];
+  }
+}
+
+export function saveConversation(siteId: string, conversation: Conversation): void {
+  try {
+    const convos = getConversations(siteId);
+    const index = convos.findIndex((c) => c.id === conversation.id);
+    if (index >= 0) {
+      convos[index] = conversation;
+    } else {
+      convos.push(conversation);
+    }
+    localStorage.setItem(conversationsKey(siteId), JSON.stringify(convos));
+  } catch {
+    // storage full or unavailable
+  }
+}
+
+export function deleteConversation(siteId: string, conversationId: string): void {
+  try {
+    const convos = getConversations(siteId);
+    const filtered = convos.filter((c) => c.id !== conversationId);
+    localStorage.setItem(conversationsKey(siteId), JSON.stringify(filtered));
+  } catch {
+    // storage unavailable
+  }
+}
+
+export function getActiveConversationId(siteId: string): string | null {
+  try {
+    return sessionStorage.getItem(activeConversationKey(siteId));
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveConversationId(siteId: string, id: string): void {
+  try {
+    sessionStorage.setItem(activeConversationKey(siteId), id);
+  } catch {
+    // storage unavailable
+  }
+}
