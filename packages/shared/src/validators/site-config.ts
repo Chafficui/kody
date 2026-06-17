@@ -20,6 +20,12 @@ export const brandingSchema = z.object({
   position: z.enum(["bottom-right", "bottom-left"]).default("bottom-right"),
   welcomeMessage: z.string().max(500).default("Hi! How can I help you today?"),
   inputPlaceholder: z.string().max(200).default("Type your message..."),
+  bubbleIcon: z.enum(["chat", "headset", "robot", "custom"]).default("chat"),
+  bubbleIconUrl: z.string().url().optional(),
+  bubbleSize: z.enum(["sm", "md", "lg"]).default("md"),
+  theme: z.enum(["light", "dark", "auto"]).default("light"),
+  borderRadius: z.number().min(0).max(24).default(12),
+  fontFamily: z.string().max(200).optional(),
 });
 
 export const aiProviderSchema = z.object({
@@ -208,6 +214,21 @@ export const toolsSchema = z.object({
     .default({}),
 });
 
+export const personalitySchema = z.object({
+  tone: z.enum(["friendly", "professional", "casual"]).default("friendly"),
+  formality: z.enum(["formal", "informal", "balanced"]).default("balanced"),
+  responseLength: z.enum(["concise", "balanced", "detailed"]).default("balanced"),
+});
+
+export const complianceSchema = z.object({
+  aiDisclosureEnabled: z.boolean().default(true),
+  aiDisclosureMessage: z
+    .string()
+    .max(500)
+    .default("You are chatting with an AI assistant."),
+  conversationDeletionEnabled: z.boolean().default(true),
+});
+
 export const siteConfigSchema = z.object({
   siteId: z
     .string()
@@ -222,6 +243,9 @@ export const siteConfigSchema = z.object({
   tickets: ticketsSchema.default({}),
   tools: toolsSchema.default({}),
   rateLimit: rateLimitSchema.default({}),
+  personality: personalitySchema.default({}),
+  compliance: complianceSchema.default({}),
+  conversationStarters: z.array(z.string().min(1).max(200)).max(4).default([]),
   enabled: z.boolean().default(true),
 });
 
@@ -237,6 +261,8 @@ export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 export type RagConfig = z.infer<typeof ragSchema>;
 export type ToolsConfig = z.infer<typeof toolsSchema>;
 export type CustomTool = z.infer<typeof customToolSchema>;
+export type PersonalityConfig = z.infer<typeof personalitySchema>;
+export type ComplianceConfig = z.infer<typeof complianceSchema>;
 
 export const publicBrandingSchema = brandingSchema;
 
@@ -248,6 +274,13 @@ export const publicSiteConfigSchema = z.object({
     promptMessage: z.string(),
     requiredFields: z.array(z.string()),
   }),
+  personality: personalitySchema,
+  compliance: z.object({
+    aiDisclosureEnabled: z.boolean(),
+    aiDisclosureMessage: z.string(),
+    conversationDeletionEnabled: z.boolean(),
+  }),
+  conversationStarters: z.array(z.string()),
   sourceUrls: z.record(z.string(), z.string()).optional(),
 });
 
@@ -271,6 +304,13 @@ export function toPublicConfig(config: SiteConfig): PublicSiteConfig {
       promptMessage: config.tickets.promptMessage,
       requiredFields: config.tickets.requiredFields,
     },
+    personality: config.personality,
+    compliance: {
+      aiDisclosureEnabled: config.compliance.aiDisclosureEnabled,
+      aiDisclosureMessage: config.compliance.aiDisclosureMessage,
+      conversationDeletionEnabled: config.compliance.conversationDeletionEnabled,
+    },
+    conversationStarters: config.conversationStarters,
     ...(Object.keys(sourceUrls).length > 0 ? { sourceUrls } : {}),
   };
 }

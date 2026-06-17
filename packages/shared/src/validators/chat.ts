@@ -57,9 +57,21 @@ export const chatResponseEventSchema = z.discriminatedUnion("type", [
       }),
     ),
   }),
+  z.object({
+    type: z.literal("suggestions"),
+    suggestions: z.array(z.string()),
+  }),
 ]);
+
+export const feedbackRequestSchema = z.object({
+  siteId: z.string().min(1),
+  sessionId: z.string().min(1),
+  messageIndex: z.number().int().min(0),
+  rating: z.enum(["up", "down"]),
+});
 
 export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 export type ChatResponseEvent = z.infer<typeof chatResponseEventSchema>;
+export type FeedbackRequest = z.infer<typeof feedbackRequestSchema>;

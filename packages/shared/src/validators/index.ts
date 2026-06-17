@@ -25,7 +25,11 @@ export {
   type RagConfig,
   type ToolsConfig,
   type CustomTool,
+  type ComplianceConfig,
+  type PersonalityConfig,
   type PublicSiteConfig,
+  complianceSchema,
+  personalitySchema,
 } from "./site-config.js";
 
 export {
@@ -33,10 +37,12 @@ export {
   chatMessageSchema,
   chatRequestSchema,
   chatResponseEventSchema,
+  feedbackRequestSchema,
   type ChatRole,
   type ChatMessage,
   type ChatRequest,
   type ChatResponseEvent,
+  type FeedbackRequest,
 } from "./chat.js";
 
 export {
