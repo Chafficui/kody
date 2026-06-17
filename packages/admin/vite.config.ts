@@ -14,4 +14,10 @@ export default defineConfig({
       "@": resolve(__dirname, "./src"),
     },
   },
+  server: {
+    port: 4568,
+    proxy: {
+      "/api": "http://localhost:4567",
+    },
+  },
 });

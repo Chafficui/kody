@@ -20,6 +20,12 @@ interface FormData {
     position: "bottom-right" | "bottom-left";
     welcomeMessage: string;
     inputPlaceholder: string;
+    bubbleIcon: "chat" | "headset" | "robot" | "custom";
+    bubbleIconUrl: string;
+    bubbleSize: "sm" | "md" | "lg";
+    theme: "light" | "dark" | "auto";
+    borderRadius: number;
+    fontFamily: string;
     colors: {
       primary: string;
       primaryForeground: string;
@@ -29,6 +35,11 @@ interface FormData {
       userBubbleBackground: string;
       userBubbleForeground: string;
     };
+  };
+  personality: {
+    tone: "friendly" | "professional" | "casual";
+    formality: "formal" | "informal" | "balanced";
+    responseLength: "concise" | "balanced" | "detailed";
   };
   ai: {
     baseUrl: string;
@@ -77,6 +88,12 @@ interface FormData {
     messagesPerHour: number;
     messagesPerDay: number;
   };
+  compliance: {
+    aiDisclosureEnabled: boolean;
+    aiDisclosureMessage: string;
+    conversationDeletionEnabled: boolean;
+  };
+  conversationStarters: string[];
 }
 
 function Section({
@@ -121,6 +138,12 @@ function siteToForm(site: any): FormData {
       position: site.branding?.position || "bottom-right",
       welcomeMessage: site.branding?.welcomeMessage || "Hi! How can I help you today?",
       inputPlaceholder: site.branding?.inputPlaceholder || "Type your message...",
+      bubbleIcon: site.branding?.bubbleIcon || "chat",
+      bubbleIconUrl: site.branding?.bubbleIconUrl || "",
+      bubbleSize: site.branding?.bubbleSize || "md",
+      theme: site.branding?.theme || "light",
+      borderRadius: site.branding?.borderRadius ?? 12,
+      fontFamily: site.branding?.fontFamily || "",
       colors: {
         primary: site.branding?.colors?.primary || "#6366f1",
         primaryForeground: site.branding?.colors?.primaryForeground || "#ffffff",
@@ -130,6 +153,11 @@ function siteToForm(site: any): FormData {
         userBubbleBackground: site.branding?.colors?.userBubbleBackground || "#6366f1",
         userBubbleForeground: site.branding?.colors?.userBubbleForeground || "#ffffff",
       },
+    },
+    personality: {
+      tone: site.personality?.tone || "friendly",
+      formality: site.personality?.formality || "balanced",
+      responseLength: site.personality?.responseLength || "balanced",
     },
     ai: {
       baseUrl: site.ai?.baseUrl || "",
@@ -191,6 +219,13 @@ function siteToForm(site: any): FormData {
       messagesPerHour: site.rateLimit?.messagesPerHour ?? 100,
       messagesPerDay: site.rateLimit?.messagesPerDay ?? 1000,
     },
+    compliance: {
+      aiDisclosureEnabled: site.compliance?.aiDisclosureEnabled ?? true,
+      aiDisclosureMessage:
+        site.compliance?.aiDisclosureMessage || "You are chatting with an AI assistant.",
+      conversationDeletionEnabled: site.compliance?.conversationDeletionEnabled ?? true,
+    },
+    conversationStarters: site.conversationStarters || [],
   };
 }
 
@@ -299,6 +334,24 @@ export default function SiteEditPage() {
     setForm((prev) => (prev ? { ...prev, rag: { ...prev.rag, [key]: value } } : prev));
   }
 
+  function updateCompliance<K extends keyof FormData["compliance"]>(
+    key: K,
+    value: FormData["compliance"][K],
+  ) {
+    setForm((prev) =>
+      prev ? { ...prev, compliance: { ...prev.compliance, [key]: value } } : prev,
+    );
+  }
+
+  function updatePersonality<K extends keyof FormData["personality"]>(
+    key: K,
+    value: FormData["personality"][K],
+  ) {
+    setForm((prev) =>
+      prev ? { ...prev, personality: { ...prev.personality, [key]: value } } : prev,
+    );
+  }
+
   function validate(): string | null {
     if (!form) return "No form data.";
     const origins = form.allowedOrigins
@@ -344,7 +397,14 @@ export default function SiteEditPage() {
           position: form.branding.position,
           welcomeMessage: form.branding.welcomeMessage,
           inputPlaceholder: form.branding.inputPlaceholder,
+          bubbleIcon: form.branding.bubbleIcon,
+          bubbleIconUrl: form.branding.bubbleIconUrl || undefined,
+          bubbleSize: form.branding.bubbleSize,
+          theme: form.branding.theme,
+          borderRadius: form.branding.borderRadius,
+          fontFamily: form.branding.fontFamily || undefined,
         },
+        personality: form.personality,
         ai: {
           baseUrl: form.ai.baseUrl.trim(),
           apiKey: form.ai.apiKey,
@@ -399,6 +459,8 @@ export default function SiteEditPage() {
           customTools: form.tools.customTools,
         },
         rateLimit: form.rateLimit,
+        compliance: form.compliance,
+        conversationStarters: form.conversationStarters.filter((s) => s.trim()),
       };
 
       await updateSite(form.siteId, payload);
@@ -590,6 +652,198 @@ export default function SiteEditPage() {
           </div>
         </Section>
 
+        {/* Bubble Customization */}
+        <Section title="Bubble Customization">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="bubbleIcon" className={labelClass}>
+                Bubble Icon
+              </label>
+              <select
+                id="bubbleIcon"
+                value={form.branding.bubbleIcon}
+                onChange={(e) =>
+                  updateBranding(
+                    "bubbleIcon",
+                    e.target.value as "chat" | "headset" | "robot" | "custom",
+                  )
+                }
+                className={inputClass}
+              >
+                <option value="chat">Chat</option>
+                <option value="headset">Headset</option>
+                <option value="robot">Robot</option>
+                <option value="custom">Custom URL</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="bubbleSize" className={labelClass}>
+                Bubble Size
+              </label>
+              <select
+                id="bubbleSize"
+                value={form.branding.bubbleSize}
+                onChange={(e) =>
+                  updateBranding("bubbleSize", e.target.value as "sm" | "md" | "lg")
+                }
+                className={inputClass}
+              >
+                <option value="sm">Small</option>
+                <option value="md">Medium</option>
+                <option value="lg">Large</option>
+              </select>
+            </div>
+          </div>
+          {form.branding.bubbleIcon === "custom" && (
+            <div>
+              <label htmlFor="bubbleIconUrl" className={labelClass}>
+                Custom Icon URL
+              </label>
+              <input
+                id="bubbleIconUrl"
+                type="url"
+                value={form.branding.bubbleIconUrl}
+                onChange={(e) => updateBranding("bubbleIconUrl", e.target.value)}
+                placeholder="https://example.com/icon.svg"
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                URL to a custom icon image (SVG or PNG recommended)
+              </p>
+            </div>
+          )}
+        </Section>
+
+        {/* Theme */}
+        <Section title="Theme">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="theme" className={labelClass}>
+                Color Scheme
+              </label>
+              <select
+                id="theme"
+                value={form.branding.theme}
+                onChange={(e) =>
+                  updateBranding("theme", e.target.value as "light" | "dark" | "auto")
+                }
+                className={inputClass}
+              >
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="auto">Auto (follows system)</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="borderRadius" className={labelClass}>
+                Border Radius: {form.branding.borderRadius}px
+              </label>
+              <input
+                id="borderRadius"
+                type="range"
+                min="0"
+                max="24"
+                step="1"
+                value={form.branding.borderRadius}
+                onChange={(e) =>
+                  updateBranding("borderRadius", parseInt(e.target.value, 10))
+                }
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>0 (square)</span>
+                <span>24 (round)</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label htmlFor="fontFamily" className={labelClass}>
+              Font Family
+            </label>
+            <input
+              id="fontFamily"
+              type="text"
+              value={form.branding.fontFamily}
+              onChange={(e) => updateBranding("fontFamily", e.target.value)}
+              placeholder="Inter, system-ui, sans-serif"
+              className={inputClass}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Leave empty to use the default system font stack
+            </p>
+          </div>
+        </Section>
+
+        {/* Personality */}
+        <Section title="Personality">
+          <p className="text-xs text-muted-foreground mb-3">
+            Control how the assistant communicates. These settings shape the tone and style of
+            responses.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <label htmlFor="personalityTone" className={labelClass}>
+                Tone
+              </label>
+              <select
+                id="personalityTone"
+                value={form.personality.tone}
+                onChange={(e) =>
+                  updatePersonality(
+                    "tone",
+                    e.target.value as "friendly" | "professional" | "casual",
+                  )
+                }
+                className={inputClass}
+              >
+                <option value="friendly">Friendly</option>
+                <option value="professional">Professional</option>
+                <option value="casual">Casual</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="personalityFormality" className={labelClass}>
+                Formality
+              </label>
+              <select
+                id="personalityFormality"
+                value={form.personality.formality}
+                onChange={(e) =>
+                  updatePersonality(
+                    "formality",
+                    e.target.value as "formal" | "informal" | "balanced",
+                  )
+                }
+                className={inputClass}
+              >
+                <option value="formal">Formal</option>
+                <option value="informal">Informal</option>
+                <option value="balanced">Balanced</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="personalityLength" className={labelClass}>
+                Response Length
+              </label>
+              <select
+                id="personalityLength"
+                value={form.personality.responseLength}
+                onChange={(e) =>
+                  updatePersonality(
+                    "responseLength",
+                    e.target.value as "concise" | "balanced" | "detailed",
+                  )
+                }
+                className={inputClass}
+              >
+                <option value="concise">Concise</option>
+                <option value="balanced">Balanced</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </div>
+          </div>
+        </Section>
+
         {/* AI Provider */}
         <Section title="AI Provider">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -717,6 +971,119 @@ export default function SiteEditPage() {
               className={inputClass}
             />
           </div>
+        </Section>
+
+        {/* Compliance (AI Act / GDPR) */}
+        <Section title="Compliance">
+          <p className="text-xs text-muted-foreground mb-3">
+            EU AI Act Article 50 requires informing users they are interacting with AI.
+            These settings help you comply.
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              id="aiDisclosureEnabled"
+              type="checkbox"
+              checked={form.compliance.aiDisclosureEnabled}
+              onChange={(e) => updateCompliance("aiDisclosureEnabled", e.target.checked)}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary/25"
+            />
+            <div>
+              <label htmlFor="aiDisclosureEnabled" className="text-sm font-medium">
+                Show AI disclosure
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Display a notice that users are chatting with AI (required by EU AI Act Article 50, effective Aug 2, 2026)
+              </p>
+            </div>
+          </div>
+          {form.compliance.aiDisclosureEnabled && (
+            <div>
+              <label htmlFor="aiDisclosureMessage" className={labelClass}>
+                Disclosure Message
+              </label>
+              <input
+                id="aiDisclosureMessage"
+                type="text"
+                value={form.compliance.aiDisclosureMessage}
+                onChange={(e) => updateCompliance("aiDisclosureMessage", e.target.value)}
+                className={inputClass}
+              />
+            </div>
+          )}
+          <div className="flex items-center gap-3">
+            <input
+              id="conversationDeletionEnabled"
+              type="checkbox"
+              checked={form.compliance.conversationDeletionEnabled}
+              onChange={(e) =>
+                updateCompliance("conversationDeletionEnabled", e.target.checked)
+              }
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary/25"
+            />
+            <div>
+              <label htmlFor="conversationDeletionEnabled" className="text-sm font-medium">
+                Allow conversation deletion
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Show a delete button so users can erase their conversation data (GDPR right to erasure)
+              </p>
+            </div>
+          </div>
+        </Section>
+
+        {/* Conversation Starters */}
+        <Section title="Conversation Starters">
+          <p className="text-xs text-muted-foreground mb-2">
+            Suggested questions shown below the welcome message (max 4). Leave empty to disable.
+          </p>
+          {form.conversationStarters.map((starter, idx) => (
+            <div key={idx} className="flex gap-2">
+              <input
+                type="text"
+                value={starter}
+                onChange={(e) => {
+                  const starters = [...form.conversationStarters];
+                  starters[idx] = e.target.value;
+                  setForm((prev) =>
+                    prev ? { ...prev, conversationStarters: starters } : prev,
+                  );
+                }}
+                placeholder={`Suggested question ${idx + 1}`}
+                className={`${inputClass} flex-1`}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const starters = [...form.conversationStarters];
+                  starters.splice(idx, 1);
+                  setForm((prev) =>
+                    prev ? { ...prev, conversationStarters: starters } : prev,
+                  );
+                }}
+                className="text-xs text-red-500 hover:text-red-700 px-2"
+              >
+                x
+              </button>
+            </div>
+          ))}
+          {form.conversationStarters.length < 4 && (
+            <button
+              type="button"
+              onClick={() => {
+                setForm((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        conversationStarters: [...prev.conversationStarters, ""],
+                      }
+                    : prev,
+                );
+              }}
+              className="rounded-lg border border-dashed border-border px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary w-full"
+            >
+              + Add Conversation Starter
+            </button>
+          )}
         </Section>
 
         {/* Knowledge Sources */}
