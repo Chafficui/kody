@@ -1,11 +1,22 @@
 {
   "name": "@kody/widget",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "./dist/kody.js",
+  "types": "./dist/kody.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/kody.d.ts",
+      "import": "./dist/kody.esm.js",
+      "require": "./dist/kody.umd.js",
+      "default": "./dist/kody.js"
+    }
+  },
+  "files": ["dist", "README.md"],
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && tsc -p tsconfig.build.json && node scripts/stamp-types.mjs",
+    "build:bundle": "vite build",
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -22,5 +33,8 @@
   },
   "dependencies": {
     "marked": "^18.0.2"
+  },
+  "peerDependencies": {
+    "@kody/shared": "workspace:*"
   }
 }
