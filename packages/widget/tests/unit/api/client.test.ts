@@ -25,7 +25,7 @@ describe("KodyApiClient", () => {
   });
 
   describe("fetchConfig", () => {
-    it("calls correct URL", async () => {
+    it("calls correct URL with x-kody-site-id header", async () => {
       const mockFetch = vi
         .fn()
         .mockResolvedValue(new Response(JSON.stringify({ siteId: "site-123" }), { status: 200 }));
@@ -33,7 +33,12 @@ describe("KodyApiClient", () => {
 
       await client.fetchConfig();
 
-      expect(mockFetch).toHaveBeenCalledWith("https://api.example.com/api/config/site-123");
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.example.com/api/config/site-123",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-kody-site-id": "site-123" }),
+        }),
+      );
     });
 
     it("throws on non-ok response", async () => {

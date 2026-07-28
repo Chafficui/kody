@@ -27,7 +27,7 @@ function normalizeKey(key: string): string {
   return key.length === 1 ? key.toLowerCase() : key;
 }
 
-function parseChord(raw: string): Chord | null {
+export function parseChord(raw: string): Chord | null {
   const parts = raw
     .split("+")
     .map((s) => s.trim().toLowerCase())

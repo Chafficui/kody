@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createChatWindow } from "../../../src/components/chat-window.js";
+import { en } from "../../../src/i18n/en.js";
 
 function makeWindow(
   overrides: {
@@ -13,6 +14,7 @@ function makeWindow(
     onClose: overrides.onClose ?? vi.fn(),
     onSend: overrides.onSend ?? vi.fn(),
     onNewChat: vi.fn(),
+    strings: en,
   });
 }
 
