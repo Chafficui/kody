@@ -1,0 +1,2049 @@
+openapi: 3.1.0
+info:
+  title: Kody API
+  version: 0.1.0
+  description: >-
+    Kody is a self-hosted, embeddable AI chat assistant. This document describes every public HTTP endpoint exposed by
+    the Kody server. Endpoints under `/api/admin/*` require a bearer token obtained from `POST /api/admin/login`. All
+    other endpoints are gated by the `Origin` header against the site's `allowedOrigins` and a `x-kody-site-id` header.
+servers:
+  - url: http://localhost:3456
+    description: Default local development server
+tags:
+  - name: system
+    description: Liveness and metadata
+  - name: config
+    description: Public site configuration
+  - name: chat
+    description: Widget-facing chat endpoints
+  - name: tickets
+    description: Support ticket creation
+  - name: sessions
+    description: Conversation lifecycle (GDPR)
+  - name: feedback
+    description: Per-message quality feedback
+  - name: admin
+    description: Admin authentication
+  - name: sites
+    description: Site configuration CRUD (admin)
+  - name: users
+    description: Admin user management
+  - name: logs
+    description: Server log inspection
+  - name: scraping
+    description: Knowledge base re-scraping
+paths:
+  /health:
+    summary: Liveness probe
+    get:
+      summary: Server health check
+      description: Returns 200 with a static payload while the process is up. Used by Docker, load balancers, and `kody doctor`.
+      tags:
+        - system
+      responses:
+        '200':
+          description: Server is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                  timestamp:
+                    type: string
+                    format: date-time
+  /api/config/{siteId}:
+    summary: Public site config (used by the embed widget)
+    get:
+      summary: Fetch the public-facing configuration for a site
+      description: >-
+        Returns the safe subset of the site config (branding, ticket prompt, conversation starters). No secrets, no
+        guardrail internals. Cached aggressively by the widget on first load.
+      tags:
+        - config
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          description: Lowercase alphanumeric site identifier.
+          schema:
+            type: string
+            pattern: ^[a-z0-9-]+$
+      responses:
+        '200':
+          description: Public site configuration
+        '404':
+          description: Site not found or disabled
+  /api/chat:
+    summary: Send a chat message (SSE response)
+    post:
+      summary: Start or continue a chat conversation
+      description: >-
+        Streams a server-sent event response. The first event is always a `session` event with a server-issued session
+        id. Subsequent events are `delta` (token chunks), `tool_start` / `tool_end`, `sources`, `suggestions`,
+        `blocked`, `error`, and finally `done`.
+      tags:
+        - chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Server-sent event stream of chat events
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatEventStream'
+        '400':
+          description: Invalid request
+        '429':
+          description: Rate limit exceeded
+  /api/tickets:
+    summary: Create a support ticket from a conversation
+    post:
+      summary: Create a ticket for the current session
+      description: >-
+        Sends the conversation transcript (optionally) plus the required fields to the first configured ticket provider
+        (Jira, GitHub, Linear, email, or webhook).
+      tags:
+        - tickets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketRequest'
+      responses:
+        '200':
+          description: Ticket created
+        '400':
+          description: Tickets not enabled or invalid request
+  /api/sessions/{sessionId}:
+    summary: Delete a chat session (GDPR right-to-erasure)
+    delete:
+      summary: Forget a conversation
+      description: Removes all in-memory messages and the persisted feedback for the session.
+      tags:
+        - sessions
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Session deleted
+  /api/feedback:
+    summary: Record thumbs-up/down on an assistant message
+    post:
+      summary: Submit feedback for a chat message
+      description: Stores `(sessionId, messageIndex, rating)` for the admin dashboard's quality view.
+      tags:
+        - feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+      responses:
+        '201':
+          description: Feedback stored
+        '400':
+          description: Invalid request
+  /api/admin/login:
+    summary: Admin login (issues a session cookie + bearer token)
+    post:
+      summary: Authenticate as an admin
+      description: >-
+        Returns a 24-hour bearer token in the JSON body and sets an httpOnly cookie. The same token is accepted via
+        `Authorization: Bearer …` for CLI / script use.
+      tags:
+        - admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLogin'
+      responses:
+        '200':
+          description: Login successful
+        '401':
+          description: Invalid credentials
+  /api/admin/logout:
+    summary: Invalidate the current admin session
+    post:
+      summary: Log out
+      tags:
+        - admin
+      responses:
+        '200':
+          description: Logged out
+  /api/admin/sites:
+    summary: Manage Kody sites
+    get:
+      summary: List all sites
+      tags:
+        - admin
+        - sites
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array of site configurations
+        '401':
+          description: Unauthenticated
+    post:
+      summary: Create a new site
+      tags:
+        - admin
+        - sites
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteConfig'
+      responses:
+        '201':
+          description: Site created
+        '400':
+          description: Invalid configuration
+        '409':
+          description: Site id already exists
+  /api/admin/sites/{siteId}:
+    summary: Read, update, or delete a site
+    parameters:
+      - name: siteId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9-]+$
+    get:
+      summary: Fetch a site configuration
+      tags:
+        - admin
+        - sites
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Site configuration
+        '404':
+          description: Site not found
+    put:
+      summary: Update a site
+      tags:
+        - admin
+        - sites
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteConfig'
+      responses:
+        '200':
+          description: Site updated
+        '404':
+          description: Site not found
+    delete:
+      summary: Delete a site
+      tags:
+        - admin
+        - sites
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Site deleted
+        '404':
+          description: Site not found
+  /api/admin/sites/{siteId}/scraping:
+    summary: Inspect scrape results for a site
+    parameters:
+      - name: siteId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9-]+$
+    get:
+      summary: List scrape results
+      tags:
+        - admin
+        - scraping
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array of scrape results
+  /api/admin/sites/{siteId}/scraping/{sourceIndex}/rescrape:
+    summary: Re-run the scraper for one source
+    parameters:
+      - name: siteId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: sourceIndex
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Trigger a re-scrape
+      tags:
+        - admin
+        - scraping
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Scrape triggered
+        '404':
+          description: Source not found
+  /api/admin/users:
+    summary: Manage admin users
+    get:
+      summary: List admin users
+      tags:
+        - admin
+        - users
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array of users
+    post:
+      summary: Create an admin user
+      tags:
+        - admin
+        - users
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateUser'
+      responses:
+        '201':
+          description: User created
+        '409':
+          description: Email already exists
+  /api/admin/users/{userId}:
+    summary: Delete an admin user
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+    delete:
+      summary: Delete an admin user
+      tags:
+        - admin
+        - users
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User deleted
+        '400':
+          description: Cannot delete yourself
+        '404':
+          description: User not found
+  /api/admin/logs:
+    summary: Inspect and clear server logs
+    get:
+      summary: List recent log entries
+      tags:
+        - admin
+        - logs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: level
+          in: query
+          schema:
+            type: string
+            enum:
+              - debug
+              - info
+              - warn
+              - error
+        - name: since
+          in: query
+          schema:
+            type: integer
+            description: Epoch millis
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: Log entries
+    delete:
+      summary: Clear the in-memory log buffer
+      tags:
+        - admin
+        - logs
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Logs cleared
+components:
+  schemas:
+    SiteConfig:
+      type: object
+      properties:
+        siteId:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: ^[a-z0-9-]+$
+        allowedOrigins:
+          type: array
+          items:
+            type: string
+            format: uri
+        branding:
+          type: object
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 100
+              default: Assistant
+            tagline:
+              type: string
+              maxLength: 200
+            logoUrl:
+              type: string
+              format: uri
+            colors:
+              type: object
+              properties:
+                primary:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#6366f1'
+                primaryForeground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#ffffff'
+                background:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#ffffff'
+                foreground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#1f2937'
+                bubbleBackground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#f3f4f6'
+                userBubbleBackground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#6366f1'
+                userBubbleForeground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#ffffff'
+              additionalProperties: false
+              required:
+                - primary
+                - primaryForeground
+                - background
+                - foreground
+                - bubbleBackground
+                - userBubbleBackground
+                - userBubbleForeground
+              default: {}
+            position:
+              type: string
+              enum:
+                - bottom-right
+                - bottom-left
+              default: bottom-right
+            welcomeMessage:
+              type: string
+              maxLength: 500
+              default: Hi! How can I help you today?
+            inputPlaceholder:
+              type: string
+              maxLength: 200
+              default: Type your message...
+            bubbleIcon:
+              type: string
+              enum:
+                - chat
+                - headset
+                - robot
+                - custom
+              default: chat
+            bubbleIconUrl:
+              type: string
+              format: uri
+            bubbleSize:
+              type: string
+              enum:
+                - sm
+                - md
+                - lg
+              default: md
+            theme:
+              type: string
+              enum:
+                - light
+                - dark
+                - auto
+              default: light
+            borderRadius:
+              type: number
+              minimum: 0
+              maximum: 24
+              default: 12
+            fontFamily:
+              type: string
+              maxLength: 200
+          additionalProperties: false
+          required:
+            - name
+            - colors
+            - position
+            - welcomeMessage
+            - inputPlaceholder
+            - bubbleIcon
+            - bubbleSize
+            - theme
+            - borderRadius
+          default: {}
+        ai:
+          type: object
+          properties:
+            baseUrl:
+              type: string
+              format: uri
+            apiKey:
+              type: string
+              minLength: 1
+              default: ollama
+            model:
+              type: string
+              minLength: 1
+            temperature:
+              type: number
+              minimum: 0
+              maximum: 2
+              default: 0.7
+            maxTokens:
+              type: integer
+              minimum: 1
+              maximum: 32768
+              default: 1024
+            topP:
+              type: number
+              minimum: 0
+              maximum: 1
+            systemPromptPrefix:
+              type: string
+              maxLength: 4000
+          additionalProperties: false
+          required:
+            - baseUrl
+            - apiKey
+            - model
+            - temperature
+            - maxTokens
+        guardrails:
+          type: object
+          properties:
+            allowedTopics:
+              type: array
+              items:
+                type: string
+                minLength: 1
+                maxLength: 200
+            topicDescription:
+              type: string
+              minLength: 1
+              maxLength: 4000
+            refusalMessage:
+              type: string
+              maxLength: 500
+              default: I can only help with topics related to this website. Is there something else I can assist you with?
+            blockedInputPatterns:
+              type: array
+              items:
+                type: string
+              default: []
+            blockedOutputPatterns:
+              type: array
+              items:
+                type: string
+              default: []
+            maxInputLength:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              default: 2000
+            enablePromptInjectionDetection:
+              type: boolean
+              default: true
+            enableOutputScrubbing:
+              type: boolean
+              default: true
+          additionalProperties: false
+          required:
+            - allowedTopics
+            - topicDescription
+            - refusalMessage
+            - blockedInputPatterns
+            - blockedOutputPatterns
+            - maxInputLength
+            - enablePromptInjectionDetection
+            - enableOutputScrubbing
+        knowledge:
+          type: object
+          properties:
+            sources:
+              type: array
+              items:
+                oneOf:
+                  - type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - text
+                      title:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      content:
+                        type: string
+                        minLength: 1
+                        maxLength: 50000
+                      url:
+                        type: string
+                        format: uri
+                    additionalProperties: false
+                    required:
+                      - type
+                      - title
+                      - content
+                  - type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - url
+                      url:
+                        type: string
+                        format: uri
+                      title:
+                        type: string
+                        maxLength: 200
+                      refreshIntervalHours:
+                        type: integer
+                        minimum: 1
+                        maximum: 720
+                        default: 24
+                      enableJsRendering:
+                        type: boolean
+                        default: true
+                    additionalProperties: false
+                    required:
+                      - type
+                      - url
+                      - refreshIntervalHours
+                      - enableJsRendering
+                  - type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - file
+                      filePath:
+                        type: string
+                        minLength: 1
+                      title:
+                        type: string
+                        maxLength: 200
+                    additionalProperties: false
+                    required:
+                      - type
+                      - filePath
+                  - type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - faq
+                      entries:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            question:
+                              type: string
+                              minLength: 1
+                              maxLength: 500
+                            answer:
+                              type: string
+                              minLength: 1
+                              maxLength: 5000
+                          additionalProperties: false
+                          required:
+                            - question
+                            - answer
+                      url:
+                        type: string
+                        format: uri
+                    additionalProperties: false
+                    required:
+                      - type
+                      - entries
+                discriminator:
+                  propertyName: type
+              default: []
+            maxContextTokens:
+              type: integer
+              minimum: 100
+              maximum: 32000
+              default: 4000
+            rag:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                  default: false
+                chunkSize:
+                  type: integer
+                  minimum: 100
+                  maximum: 2000
+                  default: 500
+                chunkOverlap:
+                  type: integer
+                  minimum: 0
+                  maximum: 500
+                  default: 50
+                topK:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 5
+                similarityThreshold:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  default: 0.3
+              additionalProperties: false
+              required:
+                - enabled
+                - chunkSize
+                - chunkOverlap
+                - topK
+                - similarityThreshold
+              default: {}
+          additionalProperties: false
+          required:
+            - sources
+            - maxContextTokens
+            - rag
+          default: {}
+        tickets:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            promptMessage:
+              type: string
+              maxLength: 500
+              default: Would you like me to create a support ticket for this issue?
+            providers:
+              type: array
+              items:
+                oneOf:
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - jira
+                      baseUrl:
+                        type: string
+                        format: uri
+                      projectKey:
+                        type: string
+                        minLength: 1
+                      apiToken:
+                        type: string
+                        minLength: 1
+                      email:
+                        type: string
+                        format: email
+                      issueType:
+                        type: string
+                        default: Task
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - baseUrl
+                      - projectKey
+                      - apiToken
+                      - email
+                      - issueType
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - github
+                      owner:
+                        type: string
+                        minLength: 1
+                      repo:
+                        type: string
+                        minLength: 1
+                      token:
+                        type: string
+                        minLength: 1
+                      labels:
+                        type: array
+                        items:
+                          type: string
+                        default:
+                          - kody-ticket
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - owner
+                      - repo
+                      - token
+                      - labels
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - linear
+                      apiKey:
+                        type: string
+                        minLength: 1
+                      teamId:
+                        type: string
+                        minLength: 1
+                      labelIds:
+                        type: array
+                        items:
+                          type: string
+                        default: []
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - apiKey
+                      - teamId
+                      - labelIds
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - email
+                      to:
+                        type: string
+                        format: email
+                      from:
+                        type: string
+                        format: email
+                      smtpHost:
+                        type: string
+                      smtpPort:
+                        type: integer
+                      smtpUser:
+                        type: string
+                      smtpPass:
+                        type: string
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - to
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - webhook
+                      url:
+                        type: string
+                        format: uri
+                      method:
+                        type: string
+                        enum:
+                          - POST
+                          - PUT
+                        default: POST
+                      headers:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        default: {}
+                      secret:
+                        type: string
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - url
+                      - method
+                      - headers
+                discriminator:
+                  propertyName: provider
+              default: []
+            requiredFields:
+              type: array
+              items:
+                type: string
+                enum:
+                  - name
+                  - email
+                  - subject
+                  - description
+              default:
+                - email
+                - description
+          additionalProperties: false
+          required:
+            - enabled
+            - promptMessage
+            - providers
+            - requiredFields
+          default: {}
+        tools:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            maxToolCalls:
+              type: integer
+              minimum: 1
+              maximum: 10
+              default: 5
+            customTools:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                    pattern: ^[a-z_][a-z0-9_]*$
+                  description:
+                    type: string
+                    minLength: 1
+                    maxLength: 1000
+                  parameters:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - object
+                      properties:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                              enum:
+                                - string
+                                - number
+                                - boolean
+                                - integer
+                            description:
+                              type: string
+                              maxLength: 500
+                            enum:
+                              type: array
+                              items:
+                                type: string
+                          additionalProperties: false
+                          required:
+                            - type
+                      required:
+                        type: array
+                        items:
+                          type: string
+                        default: []
+                    additionalProperties: false
+                    required:
+                      - type
+                      - properties
+                      - required
+                  endpoint:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                        format: uri
+                      method:
+                        type: string
+                        enum:
+                          - GET
+                          - POST
+                          - PUT
+                          - PATCH
+                        default: POST
+                      headers:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        default: {}
+                      timeoutMs:
+                        type: integer
+                        minimum: 1000
+                        maximum: 30000
+                        default: 10000
+                    additionalProperties: false
+                    required:
+                      - url
+                      - method
+                      - headers
+                      - timeoutMs
+                additionalProperties: false
+                required:
+                  - name
+                  - description
+                  - parameters
+                  - endpoint
+              default: []
+            builtinTools:
+              type: object
+              properties:
+                knowledgeSearch:
+                  type: boolean
+                  default: true
+              additionalProperties: false
+              required:
+                - knowledgeSearch
+              default: {}
+          additionalProperties: false
+          required:
+            - enabled
+            - maxToolCalls
+            - customTools
+            - builtinTools
+          default: {}
+        rateLimit:
+          type: object
+          properties:
+            messagesPerMinute:
+              type: integer
+              minimum: 1
+              maximum: 120
+              default: 10
+            messagesPerHour:
+              type: integer
+              minimum: 1
+              maximum: 1000
+              default: 100
+            messagesPerDay:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              default: 1000
+          additionalProperties: false
+          required:
+            - messagesPerMinute
+            - messagesPerHour
+            - messagesPerDay
+          default: {}
+        personality:
+          type: object
+          properties:
+            tone:
+              type: string
+              enum:
+                - friendly
+                - professional
+                - casual
+              default: friendly
+            formality:
+              type: string
+              enum:
+                - formal
+                - informal
+                - balanced
+              default: balanced
+            responseLength:
+              type: string
+              enum:
+                - concise
+                - balanced
+                - detailed
+              default: balanced
+          additionalProperties: false
+          required:
+            - tone
+            - formality
+            - responseLength
+          default: {}
+        compliance:
+          type: object
+          properties:
+            aiDisclosureEnabled:
+              type: boolean
+              default: true
+            aiDisclosureMessage:
+              type: string
+              maxLength: 500
+              default: You are chatting with an AI assistant.
+            conversationDeletionEnabled:
+              type: boolean
+              default: true
+          additionalProperties: false
+          required:
+            - aiDisclosureEnabled
+            - aiDisclosureMessage
+            - conversationDeletionEnabled
+          default: {}
+        conversationStarters:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+          default: []
+        enabled:
+          type: boolean
+          default: true
+      additionalProperties: false
+      required:
+        - siteId
+        - allowedOrigins
+        - branding
+        - ai
+        - guardrails
+        - knowledge
+        - tickets
+        - tools
+        - rateLimit
+        - personality
+        - compliance
+        - conversationStarters
+        - enabled
+    PublicSiteConfig:
+      type: object
+      properties:
+        siteId:
+          type: string
+        branding:
+          type: object
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 100
+              default: Assistant
+            tagline:
+              type: string
+              maxLength: 200
+            logoUrl:
+              type: string
+              format: uri
+            colors:
+              type: object
+              properties:
+                primary:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#6366f1'
+                primaryForeground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#ffffff'
+                background:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#ffffff'
+                foreground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#1f2937'
+                bubbleBackground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#f3f4f6'
+                userBubbleBackground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#6366f1'
+                userBubbleForeground:
+                  type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  default: '#ffffff'
+              additionalProperties: false
+              required:
+                - primary
+                - primaryForeground
+                - background
+                - foreground
+                - bubbleBackground
+                - userBubbleBackground
+                - userBubbleForeground
+              default: {}
+            position:
+              type: string
+              enum:
+                - bottom-right
+                - bottom-left
+              default: bottom-right
+            welcomeMessage:
+              type: string
+              maxLength: 500
+              default: Hi! How can I help you today?
+            inputPlaceholder:
+              type: string
+              maxLength: 200
+              default: Type your message...
+            bubbleIcon:
+              type: string
+              enum:
+                - chat
+                - headset
+                - robot
+                - custom
+              default: chat
+            bubbleIconUrl:
+              type: string
+              format: uri
+            bubbleSize:
+              type: string
+              enum:
+                - sm
+                - md
+                - lg
+              default: md
+            theme:
+              type: string
+              enum:
+                - light
+                - dark
+                - auto
+              default: light
+            borderRadius:
+              type: number
+              minimum: 0
+              maximum: 24
+              default: 12
+            fontFamily:
+              type: string
+              maxLength: 200
+          additionalProperties: false
+          required:
+            - name
+            - colors
+            - position
+            - welcomeMessage
+            - inputPlaceholder
+            - bubbleIcon
+            - bubbleSize
+            - theme
+            - borderRadius
+        tickets:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            promptMessage:
+              type: string
+            requiredFields:
+              type: array
+              items:
+                type: string
+          additionalProperties: false
+          required:
+            - enabled
+            - promptMessage
+            - requiredFields
+        personality:
+          type: object
+          properties:
+            tone:
+              type: string
+              enum:
+                - friendly
+                - professional
+                - casual
+              default: friendly
+            formality:
+              type: string
+              enum:
+                - formal
+                - informal
+                - balanced
+              default: balanced
+            responseLength:
+              type: string
+              enum:
+                - concise
+                - balanced
+                - detailed
+              default: balanced
+          additionalProperties: false
+          required:
+            - tone
+            - formality
+            - responseLength
+        compliance:
+          type: object
+          properties:
+            aiDisclosureEnabled:
+              type: boolean
+            aiDisclosureMessage:
+              type: string
+            conversationDeletionEnabled:
+              type: boolean
+          additionalProperties: false
+          required:
+            - aiDisclosureEnabled
+            - aiDisclosureMessage
+            - conversationDeletionEnabled
+        conversationStarters:
+          type: array
+          items:
+            type: string
+        sourceUrls:
+          type: object
+          additionalProperties:
+            type: string
+      additionalProperties: false
+      required:
+        - siteId
+        - branding
+        - tickets
+        - personality
+        - compliance
+        - conversationStarters
+    KnowledgeSource:
+      oneOf:
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - text
+            title:
+              type: string
+              minLength: 1
+              maxLength: 200
+            content:
+              type: string
+              minLength: 1
+              maxLength: 50000
+            url:
+              type: string
+              format: uri
+          additionalProperties: false
+          required:
+            - type
+            - title
+            - content
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - url
+            url:
+              type: string
+              format: uri
+            title:
+              type: string
+              maxLength: 200
+            refreshIntervalHours:
+              type: integer
+              minimum: 1
+              maximum: 720
+              default: 24
+            enableJsRendering:
+              type: boolean
+              default: true
+          additionalProperties: false
+          required:
+            - type
+            - url
+            - refreshIntervalHours
+            - enableJsRendering
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - file
+            filePath:
+              type: string
+              minLength: 1
+            title:
+              type: string
+              maxLength: 200
+          additionalProperties: false
+          required:
+            - type
+            - filePath
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - faq
+            entries:
+              type: array
+              items:
+                type: object
+                properties:
+                  question:
+                    type: string
+                    minLength: 1
+                    maxLength: 500
+                  answer:
+                    type: string
+                    minLength: 1
+                    maxLength: 5000
+                additionalProperties: false
+                required:
+                  - question
+                  - answer
+            url:
+              type: string
+              format: uri
+          additionalProperties: false
+          required:
+            - type
+            - entries
+      discriminator:
+        propertyName: type
+    TicketProvider:
+      oneOf:
+        - type: object
+          properties:
+            provider:
+              type: string
+              enum:
+                - jira
+            baseUrl:
+              type: string
+              format: uri
+            projectKey:
+              type: string
+              minLength: 1
+            apiToken:
+              type: string
+              minLength: 1
+            email:
+              type: string
+              format: email
+            issueType:
+              type: string
+              default: Task
+          additionalProperties: false
+          required:
+            - provider
+            - baseUrl
+            - projectKey
+            - apiToken
+            - email
+            - issueType
+        - type: object
+          properties:
+            provider:
+              type: string
+              enum:
+                - github
+            owner:
+              type: string
+              minLength: 1
+            repo:
+              type: string
+              minLength: 1
+            token:
+              type: string
+              minLength: 1
+            labels:
+              type: array
+              items:
+                type: string
+              default:
+                - kody-ticket
+          additionalProperties: false
+          required:
+            - provider
+            - owner
+            - repo
+            - token
+            - labels
+        - type: object
+          properties:
+            provider:
+              type: string
+              enum:
+                - linear
+            apiKey:
+              type: string
+              minLength: 1
+            teamId:
+              type: string
+              minLength: 1
+            labelIds:
+              type: array
+              items:
+                type: string
+              default: []
+          additionalProperties: false
+          required:
+            - provider
+            - apiKey
+            - teamId
+            - labelIds
+        - type: object
+          properties:
+            provider:
+              type: string
+              enum:
+                - email
+            to:
+              type: string
+              format: email
+            from:
+              type: string
+              format: email
+            smtpHost:
+              type: string
+            smtpPort:
+              type: integer
+            smtpUser:
+              type: string
+            smtpPass:
+              type: string
+          additionalProperties: false
+          required:
+            - provider
+            - to
+        - type: object
+          properties:
+            provider:
+              type: string
+              enum:
+                - webhook
+            url:
+              type: string
+              format: uri
+            method:
+              type: string
+              enum:
+                - POST
+                - PUT
+              default: POST
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+              default: {}
+            secret:
+              type: string
+          additionalProperties: false
+          required:
+            - provider
+            - url
+            - method
+            - headers
+      discriminator:
+        propertyName: provider
+    ToolsConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        maxToolCalls:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+        customTools:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 64
+                pattern: ^[a-z_][a-z0-9_]*$
+              description:
+                type: string
+                minLength: 1
+                maxLength: 1000
+              parameters:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - object
+                  properties:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - string
+                            - number
+                            - boolean
+                            - integer
+                        description:
+                          type: string
+                          maxLength: 500
+                        enum:
+                          type: array
+                          items:
+                            type: string
+                      additionalProperties: false
+                      required:
+                        - type
+                  required:
+                    type: array
+                    items:
+                      type: string
+                    default: []
+                additionalProperties: false
+                required:
+                  - type
+                  - properties
+                  - required
+              endpoint:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                  method:
+                    type: string
+                    enum:
+                      - GET
+                      - POST
+                      - PUT
+                      - PATCH
+                    default: POST
+                  headers:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    default: {}
+                  timeoutMs:
+                    type: integer
+                    minimum: 1000
+                    maximum: 30000
+                    default: 10000
+                additionalProperties: false
+                required:
+                  - url
+                  - method
+                  - headers
+                  - timeoutMs
+            additionalProperties: false
+            required:
+              - name
+              - description
+              - parameters
+              - endpoint
+          default: []
+        builtinTools:
+          type: object
+          properties:
+            knowledgeSearch:
+              type: boolean
+              default: true
+          additionalProperties: false
+          required:
+            - knowledgeSearch
+          default: {}
+      additionalProperties: false
+      required:
+        - enabled
+        - maxToolCalls
+        - customTools
+        - builtinTools
+    ChatRequest:
+      type: object
+      properties:
+        siteId:
+          type: string
+          minLength: 1
+        sessionId:
+          type: string
+        message:
+          type: string
+          minLength: 1
+      additionalProperties: false
+      required:
+        - siteId
+        - message
+    ChatResponseEvent:
+      oneOf:
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - session
+            sessionId:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - sessionId
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - delta
+            content:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - content
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - done
+          additionalProperties: false
+          required:
+            - type
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - error
+            message:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - message
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - blocked
+            message:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - message
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - ticket_prompt
+            message:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - message
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - tool_start
+            name:
+              type: string
+            displayText:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - name
+            - displayText
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - tool_end
+            name:
+              type: string
+          additionalProperties: false
+          required:
+            - type
+            - name
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - sources
+            chunks:
+              type: array
+              items:
+                type: object
+                properties:
+                  title:
+                    type: string
+                  url:
+                    type: string
+                  score:
+                    type: number
+                additionalProperties: false
+                required:
+                  - title
+                  - score
+          additionalProperties: false
+          required:
+            - type
+            - chunks
+        - type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - suggestions
+            suggestions:
+              type: array
+              items:
+                type: string
+          additionalProperties: false
+          required:
+            - type
+            - suggestions
+      discriminator:
+        propertyName: type
+    ChatEventStream:
+      type: object
+      description: >-
+        SSE payload. The discriminator is the `event` field (defaults to `message` for plain data lines). Each `data`
+        field is a ChatResponseEvent JSON object.
+      properties:
+        event:
+          type: string
+          description: Optional SSE event name.
+        data:
+          $ref: '#/components/schemas/ChatResponseEvent'
+        id:
+          type: string
+        retry:
+          type: integer
+      required:
+        - data
+    FeedbackRequest:
+      type: object
+      properties:
+        siteId:
+          type: string
+          minLength: 1
+        sessionId:
+          type: string
+          minLength: 1
+        messageIndex:
+          type: integer
+          minimum: 0
+        rating:
+          type: string
+          enum:
+            - up
+            - down
+      additionalProperties: false
+      required:
+        - siteId
+        - sessionId
+        - messageIndex
+        - rating
+    TicketRequest:
+      type: object
+      properties:
+        siteId:
+          type: string
+          minLength: 1
+        sessionId:
+          type: string
+          minLength: 1
+        fields:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            subject:
+              type: string
+              minLength: 1
+              maxLength: 200
+            description:
+              type: string
+              minLength: 1
+              maxLength: 5000
+          additionalProperties: false
+          required:
+            - description
+        includeTranscript:
+          type: boolean
+          default: true
+      additionalProperties: false
+      required:
+        - siteId
+        - sessionId
+        - fields
+        - includeTranscript
+    TicketResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        ticketId:
+          type: string
+        ticketUrl:
+          type: string
+          format: uri
+        message:
+          type: string
+      additionalProperties: false
+      required:
+        - success
+        - message
+    AdminLogin:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+      additionalProperties: false
+      required:
+        - email
+        - password
+    AdminCreateUser:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+      additionalProperties: false
+      required:
+        - email
+        - password
+    CustomTool:
+      type: object
+      description: An HTTP-callable custom tool the assistant can invoke.
+      required:
+        - name
+        - description
+        - parameters
+        - endpoint
+      properties:
+        name:
+          type: string
+          pattern: ^[a-z_][a-z0-9_]*$
+        description:
+          type: string
+          maxLength: 1000
+        parameters:
+          type: object
+          required:
+            - type
+            - properties
+          properties:
+            type:
+              type: string
+              enum:
+                - object
+            properties:
+              type: object
+              additionalProperties: true
+            required:
+              type: array
+              items:
+                type: string
+        endpoint:
+          type: object
+          required:
+            - url
+            - method
+          properties:
+            url:
+              type: string
+              format: uri
+            method:
+              type: string
+              enum:
+                - GET
+                - POST
+                - PUT
+                - PATCH
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+            timeoutMs:
+              type: integer
+              minimum: 1000
+              maximum: 30000
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: 'Token returned by `POST /api/admin/login`. Send as `Authorization: Bearer <token>`.'
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: kody_session
+      description: httpOnly cookie set by the browser on admin login.
