@@ -224,7 +224,9 @@ export class ToolExecutor {
           toolCallId: callId,
           name: tool.name,
           ok: true,
-          result: text.slice(0, 10000),
+          // Keep a generous cap here — the admin UI and the agent loop
+          // both apply their own limits downstream.
+          result: text.slice(0, 50_000),
           displayText: tool.description.slice(0, 50),
         };
       } catch (err) {

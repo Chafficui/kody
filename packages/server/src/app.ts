@@ -24,6 +24,7 @@ import { AdminAuthService } from "./services/admin/auth-service.js";
 import { UrlFetcher } from "./services/knowledge/url-fetcher.js";
 import { ScrapeStore } from "./services/scrape-store.js";
 import { createAdminScrapingRouter } from "./routes/admin/scraping.js";
+import { createAdminToolsRouter } from "./routes/admin/tools.js";
 
 export interface AppDependencies {
   db: Database.Database;
@@ -82,6 +83,7 @@ export function createApp(
   const adminAuth = createAdminAuth(authService);
   app.use("/api/admin/sites", adminAuth, createAdminSitesRouter(siteStore));
   app.use("/api/admin/sites", adminAuth, createAdminScrapingRouter(scrapeStore));
+  app.use("/api/admin/sites", adminAuth, createAdminToolsRouter(siteStore));
   app.use("/api/admin/users", adminAuth, createAdminUsersRouter(authService));
   app.use("/api/admin/logs", adminAuth, createAdminLogsRouter());
 
