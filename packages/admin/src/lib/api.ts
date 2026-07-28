@@ -118,6 +118,43 @@ export async function fetchUsers(): Promise<unknown[]> {
   return res.json();
 }
 
+// Tool test (admin only)
+export interface ToolTestResult {
+  ok: boolean;
+  name: string;
+  result: string;
+  truncated: boolean;
+  displayText: string;
+  tool: {
+    name: string;
+    description: string;
+    endpoint: string;
+    method: string;
+  };
+}
+
+export async function testTool(
+  siteId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<ToolTestResult> {
+  const res = await apiFetch(
+    `/api/admin/sites/${encodeURIComponent(siteId)}/tools/${encodeURIComponent(toolName)}/test`,
+    {
+      method: "POST",
+      body: JSON.stringify({ arguments: args }),
+    },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      (body && typeof body === "object" && "error" in body && body.error?.message) ||
+      `Tool test failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return body as ToolTestResult;
+}
+
 export async function createUser(email: string, password: string): Promise<unknown> {
   const res = await apiFetch("/api/admin/users", {
     method: "POST",

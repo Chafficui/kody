@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchSite, updateSite, deleteSite } from "@/lib/api";
+import { ToolTester } from "@/components/ToolTester";
 
 interface KnowledgeSourceForm {
   type: "text" | "faq" | "url";
@@ -238,6 +239,7 @@ export default function SiteEditPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [testingToolIdx, setTestingToolIdx] = useState<number | null>(null);
 
   useEffect(() => {
     if (!siteId) return;
@@ -1458,17 +1460,26 @@ export default function SiteEditPage() {
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">Tool #{tIdx + 1}</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const customTools = [...form.tools.customTools];
-                            customTools.splice(tIdx, 1);
-                            updateTools("customTools", customTools);
-                          }}
-                          className="text-xs text-red-500 hover:text-red-700"
-                        >
-                          Remove tool
-                        </button>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setTestingToolIdx(tIdx)}
+                            className="rounded-md border border-border px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                          >
+                            Test tool
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const customTools = [...form.tools.customTools];
+                              customTools.splice(tIdx, 1);
+                              updateTools("customTools", customTools);
+                            }}
+                            className="text-xs text-red-500 hover:text-red-700"
+                          >
+                            Remove tool
+                          </button>
+                        </div>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div>
@@ -1825,6 +1836,14 @@ export default function SiteEditPage() {
           </button>
         </div>
       </form>
+
+      {testingToolIdx !== null && form.tools.customTools[testingToolIdx] && (
+        <ToolTester
+          siteId={form.siteId}
+          tool={form.tools.customTools[testingToolIdx]}
+          onClose={() => setTestingToolIdx(null)}
+        />
+      )}
     </div>
   );
 }
