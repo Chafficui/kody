@@ -14,6 +14,7 @@ import { createAdminLogsRouter } from "./routes/admin/logs.js";
 import { createWidgetRouter } from "./routes/widget.js";
 import { createSessionsRouter } from "./routes/sessions.js";
 import { createFeedbackRouter } from "./routes/feedback.js";
+import { createToolJobsRouter } from "./routes/tool-jobs.js";
 import { createSiteAuth } from "./middleware/site-auth.js";
 import { createAdminAuth } from "./middleware/admin-auth.js";
 import { createRateLimitMiddleware, RateLimiter } from "./middleware/rate-limit.js";
@@ -76,6 +77,7 @@ export function createApp(
   app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
   app.use("/api/sessions", siteAuth, createSessionsRouter(conversationStore));
   app.use("/api/feedback", siteAuth, createFeedbackRouter(deps.db));
+  app.use("/api/tool-jobs", siteAuth, createToolJobsRouter(deps.db));
 
   app.use("/api/admin", createAdminAuthRouter(authService));
 
