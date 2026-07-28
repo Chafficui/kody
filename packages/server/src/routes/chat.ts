@@ -13,6 +13,8 @@ import { KnowledgeRetriever } from "../services/knowledge/retriever.js";
 import { ToolExecutor } from "../services/tools/executor.js";
 import { runAgent } from "../services/agent.js";
 import { probeCapabilities } from "../services/capability-probe.js";
+import { ResponseCache, hashMessageTail, isCacheable } from "../services/response-cache.js";
+import { ToolJobStore } from "../services/tool-job-store.js";
 
 const SUGGEST_OPEN = "<<SUGGEST>>";
 const SUGGEST_CLOSE = "<</SUGGEST>>";
@@ -125,6 +127,35 @@ function generateTopicSuggestions(
     .map((t) => `Tell me more about ${t}`);
 }
 
+/**
+ * Re-derive the conversation's sessionId at write time, instead of
+ * relying on the value captured at request start. This protects
+ * against the case where a new chat begins while the previous
+ * request is still streaming — the in-flight `done` handler should
+ * not write its assistant message into a different session because
+ * the captured `initialSessionId` is now stale.
+ *
+ * If the original conversation has expired, a fresh one is created
+ * with the same `requestSessionId` (so the widget's session handle
+ * keeps working) and the assistant message is written there.
+ */
+function resolveSessionIdForWrite(
+  conversationStore: ConversationStore,
+  configSiteId: string,
+  requestSessionId: string | undefined,
+  initialSessionId: string,
+): string {
+  // Happy path: the conversation we created at request start is
+  // still in the map. Use the same sessionId.
+  const initial = conversationStore.getMessages(initialSessionId);
+  if (initial !== undefined) {
+    return initialSessionId;
+  }
+  // Fallback: original conversation expired. Re-derive (or create)
+  // a fresh one keyed by the request-supplied sessionId.
+  return conversationStore.getOrCreate(configSiteId, requestSessionId).sessionId;
+}
+
 export function createChatRouter(
   conversationStore: ConversationStore,
   urlFetcher?: UrlFetcher,
@@ -132,6 +163,7 @@ export function createChatRouter(
 ): RouterType {
   const knowledgeAssembler = createKnowledgeAssembler(urlFetcher);
   const router: RouterType = Router();
+  const toolJobStore = db ? new ToolJobStore(db) : undefined;
 
   router.post("/", async (req, res) => {
     const config = req.siteConfig;
@@ -170,7 +202,7 @@ export function createChatRouter(
     }
 
     const conversation = conversationStore.getOrCreate(config.siteId, requestSessionId);
-    const { sessionId } = conversation;
+    const initialSessionId = conversation.sessionId;
 
     if (conversation.messages.length === 0) {
       const enrichedSources = await knowledgeAssembler.assemble(
@@ -187,12 +219,12 @@ export function createChatRouter(
         knowledge: { sources: enrichedSources },
         systemPromptPrefix: config.ai.systemPromptPrefix,
       });
-      conversationStore.addMessage(sessionId, { role: "system", content: systemPrompt });
+      conversationStore.addMessage(initialSessionId, { role: "system", content: systemPrompt });
     }
 
-    conversationStore.addMessage(sessionId, { role: "user", content: message });
+    conversationStore.addMessage(initialSessionId, { role: "user", content: message });
 
-    const messages = conversationStore.getMessages(sessionId).map((m) => ({
+    const messages = conversationStore.getMessages(initialSessionId).map((m) => ({
       role: m.role,
       content: m.content,
     }));
@@ -214,7 +246,40 @@ export function createChatRouter(
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    res.write(`data: ${JSON.stringify({ type: "session", sessionId })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "session", sessionId: initialSessionId })}\n\n`);
+
+    // Client-disconnect handling: bind the SSE request's `close` event
+    // to an AbortController so the AI stream (and any pending async
+    // tool polls) tear down promptly when the browser tab closes or
+    // the network drops. Without this, the chat route keeps streaming
+    // into a dead socket and burns tokens / cycles until the AI call
+    // naturally finishes.
+    const abortController = new AbortController();
+    const onReqClose = () => {
+      if (!abortController.signal.aborted) {
+        abortController.abort();
+      }
+    };
+    req.on("close", onReqClose);
+
+    let closed = false;
+    const safeWrite = (chunk: string): void => {
+      if (closed) return;
+      try {
+        res.write(chunk);
+      } catch {
+        closed = true;
+      }
+    };
+    const safeEnd = (): void => {
+      if (closed) return;
+      closed = true;
+      try {
+        res.end();
+      } catch {
+        // best effort
+      }
+    };
 
     const capabilities = await probeCapabilities(config.ai);
 
@@ -224,11 +289,11 @@ export function createChatRouter(
         ? new KnowledgeRetriever(db, embeddingService)
         : null;
 
-      const toolExecutor = new ToolExecutor(retriever);
+      const toolExecutor = new ToolExecutor(retriever, toolJobStore);
       const tools = toolExecutor.getToolDefinitions(config);
 
       const agentFilter = createSuggestionFilter((content) => {
-        res.write(`data: ${JSON.stringify({ type: "delta", content })}\n\n`);
+        safeWrite(`data: ${JSON.stringify({ type: "delta", content })}\n\n`);
       });
 
       let agentStreamError = false;
@@ -237,26 +302,35 @@ export function createChatRouter(
         messages,
         toolExecutor,
         tools,
+        signal: abortController.signal,
+        toolJobStore,
         callbacks: {
           onToken: (token) => agentFilter.processToken(token),
           onDone: () => agentFilter.flush(),
           onError: (error) => {
             agentStreamError = true;
             console.error(`[chat] Agent error for ${config.siteId}:`, error);
-            res.write(
+            safeWrite(
               `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
             );
-            res.end();
+            safeEnd();
           },
           onToolStart: (name, displayText) => {
-            res.write(`data: ${JSON.stringify({ type: "tool_start", name, displayText })}\n\n`);
+            safeWrite(`data: ${JSON.stringify({ type: "tool_start", name, displayText })}\n\n`);
           },
           onToolEnd: (name) => {
-            res.write(`data: ${JSON.stringify({ type: "tool_end", name })}\n\n`);
+            safeWrite(`data: ${JSON.stringify({ type: "tool_end", name })}\n\n`);
+          },
+          onToolProgress: (info) => {
+            safeWrite(
+              `data: ${JSON.stringify({ type: "tool_progress", ...info })}\n\n`,
+            );
           },
         },
         scrubberConfig,
       });
+
+      req.off("close", onReqClose);
 
       if (!agentStreamError) {
         let suggestions = agentFilter.getSuggestions();
@@ -281,14 +355,23 @@ export function createChatRouter(
         }
 
         if (suggestions.length > 0) {
-          res.write(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
+          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
         }
-        res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-        res.end();
+        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+        safeEnd();
 
         if (contentToStore) {
           const scrubbed = scrubOutput(contentToStore, scrubberConfig);
-          conversationStore.addMessage(sessionId, {
+          // Bind sessionId inside the done handler so a new chat
+          // started mid-stream doesn't write the assistant message
+          // into the wrong session.
+          const writeSessionId = resolveSessionIdForWrite(
+            conversationStore,
+            config.siteId,
+            requestSessionId,
+            initialSessionId,
+          );
+          conversationStore.addMessage(writeSessionId, {
             role: "assistant",
             content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
           });
@@ -317,26 +400,86 @@ export function createChatRouter(
         }
       }
 
+      // Opt-in response cache: only used for plain text turns (no
+      // tool calls in the conversation) so we never replay a stale
+      // tool-using reply.
+      const cache = new ResponseCache(config.cache);
+      const lastUserMessage = message;
+      const cacheHit =
+        cache.isEnabled() && isCacheable(messages)
+          ? cache.get({
+              siteId: config.siteId,
+              model: config.ai.model,
+              temperature: config.ai.temperature,
+              lastUserMessage,
+              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+            })
+          : null;
+
+      if (cacheHit) {
+        safeWrite(
+          `data: ${JSON.stringify({ type: "cache_hit", contentLength: cacheHit.content.length })}\n\n`,
+        );
+        agentFilterLikeReplay(safeWrite, cacheHit.content);
+
+        const suggestions = generateTopicSuggestions(
+          config.guardrails.allowedTopics,
+          message,
+          config.conversationStarters,
+        );
+        if (suggestions.length > 0) {
+          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
+        }
+        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+        safeEnd();
+
+        const scrubbed = scrubOutput(cacheHit.content, scrubberConfig);
+        const writeSessionId = resolveSessionIdForWrite(
+          conversationStore,
+          config.siteId,
+          requestSessionId,
+          initialSessionId,
+        );
+        conversationStore.addMessage(writeSessionId, {
+          role: "assistant",
+          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+        });
+        req.off("close", onReqClose);
+        return;
+      }
+
       const ragFilter = createSuggestionFilter((content) => {
         const scrubbed = scrubOutput(content, scrubberConfig);
         if (!scrubbed.blocked) {
-          res.write(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
+          safeWrite(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
         }
       });
 
       let ragStreamError = false;
-      const result = await streamChatCompletion(config.ai, messages, {
-        onToken: (token) => ragFilter.processToken(token),
-        onDone: () => ragFilter.flush(),
-        onError: (error) => {
-          ragStreamError = true;
-          console.error(`[chat] AI stream error for ${config.siteId}:`, error);
-          res.write(
-            `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
-          );
-          res.end();
+      const result = await streamChatCompletion(
+        config.ai,
+        messages,
+        {
+          onToken: (token) => ragFilter.processToken(token),
+          onDone: () => ragFilter.flush(),
+          onError: (error) => {
+            ragStreamError = true;
+            console.error(`[chat] AI stream error for ${config.siteId}:`, error);
+            safeWrite(
+              `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
+            );
+            safeEnd();
+          },
+          onRetry: ({ attempt, delayMs, reason }) => {
+            safeWrite(
+              `data: ${JSON.stringify({ type: "retrying", attempt, delayMs, reason })}\n\n`,
+            );
+          },
         },
-      });
+        { signal: abortController.signal },
+      );
+
+      req.off("close", onReqClose);
 
       if (!ragStreamError) {
         let suggestions = ragFilter.getSuggestions();
@@ -361,40 +504,119 @@ export function createChatRouter(
         }
 
         if (suggestions.length > 0) {
-          res.write(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
+          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
         }
-        res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-        res.end();
+        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+        safeEnd();
+
+        // Cache the assistant's reply for next time, but only for
+        // turns that are safe to replay (no tool calls, etc.).
+        if (contentToStore && isCacheable(messages)) {
+          cache.set(
+            {
+              siteId: config.siteId,
+              model: config.ai.model,
+              temperature: config.ai.temperature,
+              lastUserMessage,
+              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+            },
+            contentToStore,
+          );
+        }
 
         if (contentToStore) {
           const scrubbed = scrubOutput(contentToStore, scrubberConfig);
-          conversationStore.addMessage(sessionId, {
+          const writeSessionId = resolveSessionIdForWrite(
+            conversationStore,
+            config.siteId,
+            requestSessionId,
+            initialSessionId,
+          );
+          conversationStore.addMessage(writeSessionId, {
             role: "assistant",
             content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
           });
         }
       }
     } else {
+      // Plain (no-tools, no-rag) path: same caching as the RAG path.
+      const cache = new ResponseCache(config.cache);
+      const lastUserMessage = message;
+      const cacheHit =
+        cache.isEnabled() && isCacheable(messages)
+          ? cache.get({
+              siteId: config.siteId,
+              model: config.ai.model,
+              temperature: config.ai.temperature,
+              lastUserMessage,
+              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+            })
+          : null;
+
+      if (cacheHit) {
+        safeWrite(
+          `data: ${JSON.stringify({ type: "cache_hit", contentLength: cacheHit.content.length })}\n\n`,
+        );
+        agentFilterLikeReplay(safeWrite, cacheHit.content);
+
+        const suggestions = generateTopicSuggestions(
+          config.guardrails.allowedTopics,
+          message,
+          config.conversationStarters,
+        );
+        if (suggestions.length > 0) {
+          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
+        }
+        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+        safeEnd();
+
+        const scrubbed = scrubOutput(cacheHit.content, scrubberConfig);
+        const writeSessionId = resolveSessionIdForWrite(
+          conversationStore,
+          config.siteId,
+          requestSessionId,
+          initialSessionId,
+        );
+        conversationStore.addMessage(writeSessionId, {
+          role: "assistant",
+          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+        });
+        req.off("close", onReqClose);
+        return;
+      }
+
       const filter = createSuggestionFilter((content) => {
         const scrubbed = scrubOutput(content, scrubberConfig);
         if (!scrubbed.blocked) {
-          res.write(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
+          safeWrite(`data: ${JSON.stringify({ type: "delta", content: scrubbed.content })}\n\n`);
         }
       });
 
       let streamError = false;
-      const result = await streamChatCompletion(config.ai, messages, {
-        onToken: (token) => filter.processToken(token),
-        onDone: () => filter.flush(),
-        onError: (error) => {
-          streamError = true;
-          console.error(`[chat] AI stream error for ${config.siteId}:`, error);
-          res.write(
-            `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
-          );
-          res.end();
+      const result = await streamChatCompletion(
+        config.ai,
+        messages,
+        {
+          onToken: (token) => filter.processToken(token),
+          onDone: () => filter.flush(),
+          onError: (error) => {
+            streamError = true;
+            console.error(`[chat] AI stream error for ${config.siteId}:`, error);
+            safeWrite(
+              `data: ${JSON.stringify({ type: "error", message: "Something went wrong. Please try again." })}\n\n`,
+            );
+            safeEnd();
+          },
+          onRetry: ({ attempt, delayMs, reason }) => {
+            safeWrite(
+              `data: ${JSON.stringify({ type: "retrying", attempt, delayMs, reason })}\n\n`,
+            );
+          },
         },
-      });
+        { signal: abortController.signal },
+      );
+
+      req.off("close", onReqClose);
 
       if (!streamError) {
         let suggestions = filter.getSuggestions();
@@ -419,14 +641,33 @@ export function createChatRouter(
         }
 
         if (suggestions.length > 0) {
-          res.write(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
+          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
         }
-        res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-        res.end();
+        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+        safeEnd();
+
+        if (contentToStore && isCacheable(messages)) {
+          cache.set(
+            {
+              siteId: config.siteId,
+              model: config.ai.model,
+              temperature: config.ai.temperature,
+              lastUserMessage,
+              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+            },
+            contentToStore,
+          );
+        }
 
         if (contentToStore) {
           const scrubbed = scrubOutput(contentToStore, scrubberConfig);
-          conversationStore.addMessage(sessionId, {
+          const writeSessionId = resolveSessionIdForWrite(
+            conversationStore,
+            config.siteId,
+            requestSessionId,
+            initialSessionId,
+          );
+          conversationStore.addMessage(writeSessionId, {
             role: "assistant",
             content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
           });
@@ -436,4 +677,19 @@ export function createChatRouter(
   });
 
   return router;
+}
+
+/**
+ * Replay a cached assistant reply as a sequence of `delta` SSE
+ * events followed by `done`. We split the content into small chunks
+ * (mirroring the way the AI provider would normally emit tokens) so
+ * the widget renders the replayed text the same way as a live
+ * stream.
+ */
+function agentFilterLikeReplay(write: (chunk: string) => void, content: string): void {
+  const chunkSize = 32;
+  for (let i = 0; i < content.length; i += chunkSize) {
+    const slice = content.slice(i, i + chunkSize);
+    write(`data: ${JSON.stringify({ type: "delta", content: slice })}\n\n`);
+  }
 }
