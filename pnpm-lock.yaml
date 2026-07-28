@@ -62,6 +62,9 @@ importers:
       '@kody/shared':
         specifier: workspace:*
         version: link:../shared
+      '@kody/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
