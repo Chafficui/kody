@@ -2,6 +2,6 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    projects: ["packages/shared", "packages/server", "packages/widget"],
+    projects: ["packages/shared", "packages/server", "packages/widget", "packages/tools"],
   },
 });
