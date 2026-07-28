@@ -25,6 +25,8 @@ export {
   type RagConfig,
   type ToolsConfig,
   type CustomTool,
+  type ToolAuth,
+  type ToolRetry,
   type ComplianceConfig,
   type PersonalityConfig,
   type PublicSiteConfig,

@@ -183,6 +183,23 @@ const toolParameterSchema = z.object({
   enum: z.array(z.string()).optional(),
 });
 
+const toolAuthSchema = z.object({
+  type: z.enum(["bearer", "apiKey"]),
+  /** Value or env-var name; resolved at runtime. */
+  value: z.string().min(1),
+  /** For `apiKey`: header name (e.g. "X-Api-Key"). Defaults to "Authorization". */
+  headerName: z.string().min(1).optional(),
+  /** When true, the value is a name in `process.env` to resolve at call time. */
+  fromEnv: z.boolean().default(false),
+});
+
+const toolRetrySchema = z.object({
+  /** Maximum number of attempts including the first one. Must be >= 1, max 3. */
+  maxAttempts: z.number().int().min(1).max(3).default(2),
+  /** Base delay in ms between attempts (exponential backoff applied on top). */
+  baseDelayMs: z.number().int().min(50).max(5000).default(250),
+});
+
 const customToolSchema = z.object({
   name: z
     .string()
@@ -200,6 +217,12 @@ const customToolSchema = z.object({
     method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
     headers: z.record(z.string()).default({}),
     timeoutMs: z.number().int().min(1000).max(30000).default(10000),
+    /** Optional HMAC-SHA256 secret. When set, the body is signed and sent in `X-Kody-Signature`. */
+    secret: z.string().min(1).optional(),
+    /** Optional bearer / api-key auth. Overrides any matching header in `headers`. */
+    auth: toolAuthSchema.optional(),
+    /** Optional retry policy applied on transient errors. */
+    retry: toolRetrySchema.optional(),
   }),
 });
 
@@ -261,6 +284,8 @@ export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 export type RagConfig = z.infer<typeof ragSchema>;
 export type ToolsConfig = z.infer<typeof toolsSchema>;
 export type CustomTool = z.infer<typeof customToolSchema>;
+export type ToolAuth = z.infer<typeof toolAuthSchema>;
+export type ToolRetry = z.infer<typeof toolRetrySchema>;
 export type PersonalityConfig = z.infer<typeof personalitySchema>;
 export type ComplianceConfig = z.infer<typeof complianceSchema>;
 
