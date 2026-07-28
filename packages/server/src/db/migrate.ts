@@ -1,6 +1,19 @@
 import type Database from "better-sqlite3";
 
-const migrations = [
+interface Migration {
+  version: number;
+  name: string;
+  up: string;
+  /**
+   * Optional rollback SQL, executed manually by an operator if they
+   * need to reverse the migration. The automated `migrate()` function
+   * never runs this — it exists for documentation and for any future
+   * `migrate --down` command.
+   */
+  down?: string;
+}
+
+const migrations: Migration[] = [
   {
     version: 1,
     name: "create_sites",
@@ -128,6 +141,39 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_feedback_site ON feedback(site_id);
     `,
   },
+  {
+    version: 9,
+    name: "create_tool_jobs",
+    up: `
+      CREATE TABLE IF NOT EXISTS tool_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL UNIQUE,
+        site_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        endpoint_url TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(status IN ('pending', 'running', 'succeeded', 'failed', 'timeout')),
+        progress REAL,
+        poll_url TEXT,
+        result TEXT,
+        error_message TEXT,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT,
+        last_polled_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_jobs_job_id ON tool_jobs(job_id);
+      CREATE INDEX IF NOT EXISTS idx_tool_jobs_site_session ON tool_jobs(site_id, session_id);
+      CREATE INDEX IF NOT EXISTS idx_tool_jobs_status ON tool_jobs(status);
+    `,
+    down: `
+      DROP INDEX IF EXISTS idx_tool_jobs_status;
+      DROP INDEX IF EXISTS idx_tool_jobs_site_session;
+      DROP INDEX IF EXISTS idx_tool_jobs_job_id;
+      DROP TABLE IF EXISTS tool_jobs;
+    `,
+  },
 ];
 
 export function migrate(db: Database.Database): void {
@@ -157,4 +203,19 @@ export function migrate(db: Database.Database): void {
       );
     })();
   }
+}
+
+/**
+ * List the down SQL for the most recently applied migration, if any.
+ * Operators can use this when they need to roll back manually. We do
+ * not run down migrations automatically — the brief allows either
+ * an automated `down` runner or a documented rollback.
+ */
+export function latestRollbackSql(db: Database.Database): string | null {
+  const row = db
+    .prepare("SELECT version FROM _migrations ORDER BY version DESC LIMIT 1")
+    .get() as { version: number } | undefined;
+  if (!row) return null;
+  const migration = migrations.find((m) => m.version === row.version);
+  return migration?.down ?? null;
 }
