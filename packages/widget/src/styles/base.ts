@@ -54,6 +54,11 @@ export const BASE_STYLES = /* css */ `
   transform: scale(0.96);
 }
 
+.kody-bubble:focus-visible {
+  outline: 2px solid var(--kody-primary);
+  outline-offset: 2px;
+}
+
 .kody-bubble svg {
   width: 24px;
   height: 24px;
@@ -1031,6 +1036,34 @@ a.kody-source-link:hover {
 
   .kody-bubble--pulse {
     animation: none;
+  }
+}
+
+/* ── High contrast ── */
+
+@media (prefers-contrast: more) {
+  .kody-bubble {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+  .kody-window {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
+  .kody-input,
+  .kody-ticket-form input,
+  .kody-ticket-form textarea {
+    border-width: 2px;
+  }
+  .kody-message-content th,
+  .kody-message-content td {
+    border-width: 2px;
+  }
+  .kody-header-btn,
+  .kody-send-btn,
+  .kody-suggestion-btn,
+  .kody-starter-btn {
+    border-width: 2px;
   }
 }
 

@@ -445,6 +445,9 @@ export class KodyWidget {
       this.focusTrapTeardown();
       this.focusTrapTeardown = null;
     }
+    // Return focus to the bubble so keyboard users can re-open the
+    // chat without tabbing through the whole page (WCAG 2.4.3).
+    this.bubble.focus();
     for (const cb of this.closeCallbacks) cb();
     this.emitter.emit({ type: "close" });
   }
