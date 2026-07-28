@@ -69,6 +69,13 @@ export interface CreateToolJobInput {
   endpointUrl: string;
   /** Optional poll URL the server should GET to check on the job. */
   pollUrl?: string;
+  /**
+   * Optional explicit job id. When the customer tool endpoint
+   * returns a jobId in its 202 response, the executor passes it
+   * through here so the stored row and the endpoint share the same
+   * handle. If omitted, the store generates a UUID.
+   */
+  jobId?: string;
 }
 
 export interface ToolJobUpdate {
@@ -85,7 +92,7 @@ export class ToolJobStore {
   constructor(private db: Database.Database) {}
 
   create(input: CreateToolJobInput): ToolJob {
-    const jobId = randomUUID();
+    const jobId = input.jobId ?? randomUUID();
     this.db
       .prepare(
         `INSERT INTO tool_jobs (job_id, site_id, session_id, tool_name, endpoint_url, status, poll_url)

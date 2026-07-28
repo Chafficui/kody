@@ -197,6 +197,7 @@ export class ToolExecutor {
 
         if (this.toolJobStore) {
           this.toolJobStore.create({
+            jobId: payload.jobId,
             siteId: config.siteId,
             // We don't have a sessionId here; the agent will update it
             // when it picks the job up. Use a placeholder so the row
