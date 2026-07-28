@@ -342,10 +342,9 @@ describe("doctor (against a fake server)", () => {
     fs.writeFileSync(
       scriptPath,
       `const http = require("http");
-const port = parseInt(process.env.PORT, 10);
 const mode = process.env.MODE || "ok";
 const server = http.createServer((req, res) => {
-  if (mode === "down" || (req.url === "/health" && mode === "no-health")) {
+  if (mode === "down") {
     res.writeHead(503); res.end(); return;
   }
   if (req.url === "/health") {
@@ -368,8 +367,9 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(404); res.end();
 });
-server.listen(port, "127.0.0.1", () => {
-  console.log("listening", port);
+server.listen(0, "127.0.0.1", () => {
+  const port = server.address().port;
+  console.log("PORT=" + port);
 });
 `,
       "utf8",
@@ -381,39 +381,38 @@ server.listen(port, "127.0.0.1", () => {
   function startFakeServer(mode: "ok" | "down"): Promise<{ port: number; kill: () => void }> {
     return new Promise((resolve, reject) => {
       const { spawn } = require("node:child_process") as typeof import("node:child_process");
-      const net = require("node:net") as typeof import("node:net");
       const scriptPath = startFakeServerScript();
-      // Bind a port ourselves so the child uses a known one.
-      const srv = net.createServer();
-      srv.listen(0, "127.0.0.1", () => {
-        const addr = srv.address();
-        if (!addr || typeof addr === "string") {
-          srv.close();
-          reject(new Error("failed to bind"));
-          return;
-        }
-        const port = addr.port;
-        srv.close(() => {
-          const child = spawn("node", [scriptPath], {
-            env: { ...process.env, PORT: String(port), MODE: mode },
-            stdio: ["ignore", "pipe", "pipe"],
-          });
-          let resolved = false;
-          child.stdout.on("data", (b: Buffer) => {
-            if (!resolved && b.toString().includes("listening")) {
-              resolved = true;
-              resolve({ port, kill: () => child.kill() });
-            }
-          });
-          child.stderr.on("data", () => {
-            // swallow
-          });
-          child.on("error", reject);
-          child.on("close", () => {
-            if (!resolved) reject(new Error("fake server exited before listening"));
-          });
-        });
+      const child = spawn("node", [scriptPath], {
+        env: { ...process.env, MODE: mode },
+        stdio: ["ignore", "pipe", "pipe"],
       });
+      let resolved = false;
+      let buffer = "";
+      const onChunk = (b: Buffer) => {
+        buffer += b.toString();
+        const m = buffer.match(/PORT=(\d+)/);
+        if (!resolved && m) {
+          resolved = true;
+          resolve({ port: parseInt(m[1], 10), kill: () => child.kill() });
+        }
+      };
+      child.stdout.on("data", onChunk);
+      child.stderr.on("data", () => {
+        // swallow
+      });
+      child.on("error", reject);
+      child.on("close", () => {
+        if (!resolved) reject(new Error("fake server exited before printing PORT"));
+      });
+      // Safety timeout — if the child never prints PORT, fail loudly
+      // rather than hang the test.
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          child.kill();
+          reject(new Error(`fake server did not print PORT within 5s. stdout so far: ${buffer}`));
+        }
+      }, 5000);
     });
   }
 
