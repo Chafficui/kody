@@ -28,6 +28,18 @@ export const brandingSchema = z.object({
   fontFamily: z.string().max(200).optional(),
 });
 
+export const aiRetrySchema = z.object({
+  maxAttempts: z.number().int().min(1).max(10).default(3),
+  baseDelayMs: z.number().int().min(0).max(10000).default(200),
+  maxDelayMs: z.number().int().min(0).max(60000).default(2000),
+});
+
+export const responseCacheSchema = z.object({
+  enabled: z.boolean().default(false),
+  ttlSeconds: z.number().int().min(1).max(86400).default(3600),
+  maxEntries: z.number().int().min(1).max(100000).default(1000),
+});
+
 export const aiProviderSchema = z.object({
   baseUrl: z.string().url(),
   apiKey: z.string().min(1).default("ollama"),
@@ -36,6 +48,7 @@ export const aiProviderSchema = z.object({
   maxTokens: z.number().int().min(1).max(32768).default(1024),
   topP: z.number().min(0).max(1).optional(),
   systemPromptPrefix: z.string().max(4000).optional(),
+  retry: aiRetrySchema.default({}),
 });
 
 export const guardrailsSchema = z.object({
@@ -200,6 +213,9 @@ const customToolSchema = z.object({
     method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
     headers: z.record(z.string()).default({}),
     timeoutMs: z.number().int().min(1000).max(30000).default(10000),
+    async: z.boolean().default(false),
+    asyncPollUrl: z.string().url().optional(),
+    asyncPollIntervalMs: z.number().int().min(500).max(60000).default(2000),
   }),
 });
 
@@ -212,6 +228,7 @@ export const toolsSchema = z.object({
       knowledgeSearch: z.boolean().default(true),
     })
     .default({}),
+  asyncMaxWaitMs: z.number().int().min(1000).max(300000).default(30000),
 });
 
 export const personalitySchema = z.object({
@@ -245,6 +262,7 @@ export const siteConfigSchema = z.object({
   rateLimit: rateLimitSchema.default({}),
   personality: personalitySchema.default({}),
   compliance: complianceSchema.default({}),
+  cache: responseCacheSchema.default({}),
   conversationStarters: z.array(z.string().min(1).max(200)).max(4).default([]),
   enabled: z.boolean().default(true),
 });
@@ -252,6 +270,8 @@ export const siteConfigSchema = z.object({
 export type SiteConfig = z.infer<typeof siteConfigSchema>;
 export type BrandingConfig = z.infer<typeof brandingSchema>;
 export type AiProviderConfig = z.infer<typeof aiProviderSchema>;
+export type AiRetryConfig = z.infer<typeof aiRetrySchema>;
+export type ResponseCacheConfig = z.infer<typeof responseCacheSchema>;
 export type GuardrailsConfig = z.infer<typeof guardrailsSchema>;
 export type KnowledgeSource = z.infer<typeof knowledgeSourceSchema>;
 export type KnowledgeConfig = z.infer<typeof knowledgeSchema>;
