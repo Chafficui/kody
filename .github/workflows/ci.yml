@@ -66,3 +66,16 @@ jobs:
             echo "::error::Widget bundle exceeds 30KB gzip limit (${GZIP_SIZE} bytes)"
             exit 1
           fi
+
+  hosting-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check for hosting-boundary leaks
+        run: node scripts/check-hosting-leaks.mjs
+
