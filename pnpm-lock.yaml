@@ -77,6 +77,9 @@ importers:
       helmet:
         specifier: ^8.1.0
         version: 8.1.0
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.0
       linkedom:
         specifier: ^0.18.12
         version: 0.18.12
@@ -96,6 +99,9 @@ importers:
       '@types/express':
         specifier: ^5.0.0
         version: 5.0.6
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
       '@types/uuid':
         specifier: ^10.0.0
         version: 10.0.0

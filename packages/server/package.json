@@ -20,6 +20,7 @@
     "better-sqlite3": "^12.11.1",
     "express": "^5.1.0",
     "helmet": "^8.1.0",
+    "js-yaml": "^4.1.0",
     "linkedom": "^0.18.12",
     "playwright": "^1.59.1",
     "uuid": "^14.0.0",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/express": "^5.0.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/uuid": "^10.0.0",
     "supertest": "^7.1.0",
     "tsx": "^4.19.0",
