@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   generateFiles,
   renderEnvFile,
@@ -22,6 +22,7 @@ const sampleOpts: InitOptions = {
   adminEmail: "admin@example.com",
   adminPassword: "supersecret123",
   serverPort: 3456,
+  serverUrl: "http://localhost:3456",
 };
 
 describe("templates", () => {
@@ -43,9 +44,22 @@ describe("templates", () => {
     expect(env).toContain("ALLOWED_ORIGIN=http://localhost:8080");
     expect(env).toContain("AI_BASE_URL=http://localhost:11434/v1");
     expect(env).toContain("AI_MODEL=llama3.2");
-    expect(env).toContain("AI_API_KEY=ollama");
+    // Secrets are single-quoted so embedded #, spaces, or newlines can't
+    // truncate the value or turn the rest of the line into a comment.
+    expect(env).toContain("AI_API_KEY='ollama'");
     expect(env).toContain("ADMIN_EMAIL=admin@example.com");
-    expect(env).toContain("ADMIN_PASSWORD=supersecret123");
+    expect(env).toContain("ADMIN_PASSWORD='supersecret123'");
+  });
+
+  it("escapes special characters in secret values", () => {
+    const opts: InitOptions = { ...sampleOpts, apiKey: "sk#abc def", adminPassword: "p'ss\nword" };
+    const env = renderEnvFile(opts);
+    // The # would normally turn the rest of the line into a comment; quoting
+    // the whole value protects it.
+    expect(env).toContain("AI_API_KEY='sk#abc def'");
+    // Embedded single quote gets escaped with the standard '\'' trick; the
+    // raw newline would otherwise break the line entirely.
+    expect(env).toContain("ADMIN_PASSWORD='p'\\''ss\nword'");
   });
 
   it("renders a docker-compose.yml with the server port", () => {
@@ -82,6 +96,14 @@ describe("templates", () => {
 describe("CLI binary", () => {
   // The CLI runs as a separate process. We exec the built dist directly.
   const cliPath = path.resolve(__dirname, "..", "dist", "cli.js");
+  // The vitest globalSetup already guards this, but assert it again here
+  // so a misconfigured local run fails with a clear message instead of
+  // MODULE_NOT_FOUND later.
+  if (!existsSync(cliPath)) {
+    throw new Error(
+      `Missing build at ${cliPath}. Run \`pnpm --filter @kody/cli build\` (or \`pnpm install\`) first.`,
+    );
+  }
 
   it("exposes --help and lists all three subcommands", () => {
     const out = execFileSync("node", [cliPath, "--help"], { encoding: "utf8" });
@@ -96,13 +118,13 @@ describe("CLI binary", () => {
     for (const flag of [
       "--non-interactive",
       "--server-dir",
+      "--server-url",
+      "--port",
       "--base-url",
       "--model",
-      "--api-key",
       "--site-id",
       "--origin",
       "--admin-email",
-      "--admin-password",
     ]) {
       expect(out, `init --help should mention ${flag}`).toContain(flag);
     }
@@ -118,7 +140,6 @@ describe("CLI binary", () => {
   it("`tools test --help` documents its options", () => {
     const out = execFileSync("node", [cliPath, "tools", "test", "--help"], { encoding: "utf8" });
     expect(out).toContain("--server-url");
-    expect(out).toContain("--token");
     expect(out).toContain("--args");
   });
 });
@@ -138,22 +159,25 @@ describe("init --non-interactive", () => {
           "--non-interactive",
           "--server-dir",
           serverDir,
+          "--server-url",
+          "http://localhost:3456",
+          "--port",
+          "3456",
           "--base-url",
           "http://localhost:11434/v1",
           "--model",
           "llama3.2",
-          "--api-key",
-          "ollama",
           "--site-id",
           "my-site",
           "--origin",
           "http://localhost:8080",
           "--admin-email",
           "admin@example.com",
-          "--admin-password",
-          "password123",
         ],
-        { stdio: "pipe" },
+        {
+          stdio: "pipe",
+          env: { ...process.env, KODY_API_KEY: "ollama", KODY_ADMIN_PASSWORD: "password123" },
+        },
       );
 
       // All four files exist
@@ -167,12 +191,12 @@ describe("init --non-interactive", () => {
       expect(env).toContain("SITE_ID=my-site");
       expect(env).toContain("ALLOWED_ORIGIN=http://localhost:8080");
       expect(env).toContain("AI_MODEL=llama3.2");
-      expect(env).toContain("ADMIN_PASSWORD=password123");
+      expect(env).toContain("ADMIN_PASSWORD='password123'");
 
       // EMBED.md contains the right snippet
       const embed = readFileSync(path.join(serverDir, "EMBED.md"), "utf8");
       expect(embed).toContain('data-site-id="my-site"');
-      expect(embed).toContain("http://localhost:8080/widget.js");
+      expect(embed).toContain("http://localhost:3456/widget.js");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -195,18 +219,17 @@ describe("init --non-interactive", () => {
             "http://localhost:11434/v1",
             "--model",
             "llama3.2",
-            "--api-key",
-            "ollama",
             "--site-id",
             "Bad Site",
             "--origin",
             "http://localhost:8080",
             "--admin-email",
             "admin@example.com",
-            "--admin-password",
-            "password123",
           ],
-          { stdio: "pipe" },
+          {
+            stdio: "pipe",
+            env: { ...process.env, KODY_API_KEY: "ollama", KODY_ADMIN_PASSWORD: "password123" },
+          },
         );
       } catch (err) {
         code = (err as { status: number }).status ?? 1;
@@ -235,18 +258,17 @@ describe("init --non-interactive", () => {
             "http://localhost:11434/v1",
             "--model",
             "llama3.2",
-            "--api-key",
-            "ollama",
             "--site-id",
             "ok-site",
             "--origin",
             "http://localhost:8080",
             "--admin-email",
             "admin@example.com",
-            "--admin-password",
-            "short",
           ],
-          { stdio: "pipe" },
+          {
+            stdio: "pipe",
+            env: { ...process.env, KODY_API_KEY: "ollama", KODY_ADMIN_PASSWORD: "short" },
+          },
         );
       } catch (err) {
         code = (err as { status: number }).status ?? 1;
@@ -281,18 +303,17 @@ describe("init --non-interactive", () => {
             "http://localhost:11434/v1",
             "--model",
             "llama3.2",
-            "--api-key",
-            "ollama",
             "--site-id",
             "my-site",
             "--origin",
             "http://localhost:8080",
             "--admin-email",
             "admin@example.com",
-            "--admin-password",
-            "password123",
           ],
-          { stdio: "pipe" },
+          {
+            stdio: "pipe",
+            env: { ...process.env, KODY_API_KEY: "ollama", KODY_ADMIN_PASSWORD: "password123" },
+          },
         );
       } catch (err) {
         code = (err as { status: number }).status ?? 1;
@@ -329,23 +350,35 @@ describe("doctor (against a fake server)", () => {
   // too tight when we have two sequential spawns in one test.
   const SPAWN_TIMEOUT = 20_000;
 
-  // The fake server must run in a separate process because the CLI
-  // process does blocking I/O against it — if the test process hosts
-  // both, the parent's blocked event loop can't accept connections and
-  // the CLI's requests time out. (We learned this the hard way.)
-  function startFakeServerScript(): string {
-    const path_ = require("node:path") as typeof import("node:path");
-    const fs = require("node:fs") as typeof import("node:fs");
-    const os = require("node:os") as typeof import("node:os");
-    const dir = fs.mkdtempSync(path_.join(os.tmpdir(), "kody-fake-"));
-    const scriptPath = path_.join(dir, "server.cjs");
-    fs.writeFileSync(
+  /**
+   * The fake server must run in a separate process because the CLI
+   * process does blocking I/O against it — if the test process hosts
+   * both, the parent's blocked event loop can't accept connections and
+   * the CLI's requests time out. (We learned this the hard way.)
+   *
+   * The script is written to a temporary directory; the caller is
+   * responsible for passing back the dir + child so they can be cleaned
+   * up in the test's `finally` block.
+   */
+  function writeFakeServerScript(): { scriptPath: string; dir: string } {
+    const dir = mkdtempSync(path.join(tmpdir(), "kody-fake-"));
+    const scriptPath = path.join(dir, "server.cjs");
+    writeFileSync(
       scriptPath,
       `const http = require("http");
 const mode = process.env.MODE || "ok";
 const server = http.createServer((req, res) => {
   if (mode === "down") {
     res.writeHead(503); res.end(); return;
+  }
+  if (mode === "degraded") {
+    // Only /health is broken — everything else is fine. Mirrors a
+    // server that is alive but its liveness probe is failing.
+    if (req.url === "/health") {
+      res.writeHead(503, {"Content-Type": "application/json"});
+      res.end('{"status":"degraded"}');
+      return;
+    }
   }
   if (req.url === "/health") {
     res.writeHead(200, {"Content-Type": "application/json"});
@@ -374,45 +407,56 @@ server.listen(0, "127.0.0.1", () => {
 `,
       "utf8",
     );
-    return scriptPath;
+    return { scriptPath, dir };
   }
 
-  /** Spawn the fake server in a child process and resolve to {port, kill}. */
-  function startFakeServer(mode: "ok" | "down"): Promise<{ port: number; kill: () => void }> {
+  /** Spawn the fake server in a child process and resolve to a handle. */
+  function startFakeServer(
+    mode: "ok" | "down" | "degraded",
+  ): Promise<{ port: number; kill: () => void; cleanup: () => void }> {
     return new Promise((resolve, reject) => {
-      const { spawn } = require("node:child_process") as typeof import("node:child_process");
-      const scriptPath = startFakeServerScript();
-      const child = spawn("node", [scriptPath], {
+      const { scriptPath, dir } = writeFakeServerScript();
+      const child: ChildProcess = spawn("node", [scriptPath], {
         env: { ...process.env, MODE: mode },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let resolved = false;
       let buffer = "";
-      const onChunk = (b: Buffer) => {
-        buffer += b.toString();
-        const m = buffer.match(/PORT=(\d+)/);
-        if (!resolved && m) {
-          resolved = true;
-          resolve({ port: parseInt(m[1], 10), kill: () => child.kill() });
-        }
-      };
-      child.stdout.on("data", onChunk);
-      child.stderr.on("data", () => {
-        // swallow
-      });
-      child.on("error", reject);
-      child.on("close", () => {
-        if (!resolved) reject(new Error("fake server exited before printing PORT"));
-      });
-      // Safety timeout — if the child never prints PORT, fail loudly
-      // rather than hang the test.
-      setTimeout(() => {
+      // Safety timer — if the child never prints PORT, fail loudly
+      // rather than hang the test. We clear it on success so the test
+      // process exits cleanly.
+      const safetyTimer = setTimeout(() => {
         if (!resolved) {
           resolved = true;
           child.kill();
           reject(new Error(`fake server did not print PORT within 5s. stdout so far: ${buffer}`));
         }
       }, 5000);
+      const onChunk = (b: Buffer) => {
+        buffer += b.toString();
+        const m = buffer.match(/PORT=(\d+)/);
+        if (!resolved && m) {
+          resolved = true;
+          clearTimeout(safetyTimer);
+          resolve({
+            port: parseInt(m[1], 10),
+            kill: () => child.kill(),
+            cleanup: () => {
+              child.kill();
+              rmSync(dir, { recursive: true, force: true });
+            },
+          });
+        }
+      };
+      child.stdout?.on("data", onChunk);
+      child.stderr?.on("data", () => {
+        // swallow
+      });
+      child.on("error", reject);
+      child.on("close", () => {
+        clearTimeout(safetyTimer);
+        if (!resolved) reject(new Error("fake server exited before printing PORT"));
+      });
     });
   }
 
@@ -436,7 +480,7 @@ server.listen(0, "127.0.0.1", () => {
         const config = parsed.checks.find((c) => c.name === "config");
         expect(config?.status).toBe("ok");
       } finally {
-        fake.kill();
+        fake.cleanup();
       }
     },
   );
@@ -455,7 +499,40 @@ server.listen(0, "127.0.0.1", () => {
         const health = parsed.checks.find((c) => c.name === "health");
         expect(health?.status).toBe("fail");
       } finally {
-        fake.kill();
+        fake.cleanup();
+      }
+    },
+  );
+
+  it(
+    "reports degraded when only /health fails but the other endpoints work",
+    { timeout: SPAWN_TIMEOUT },
+    async () => {
+      const fake = await startFakeServer("degraded");
+      try {
+        const url = `http://127.0.0.1:${fake.port}`;
+        const { code, stdout } = await runCli([
+          "doctor",
+          "--server-url",
+          url,
+          "--json",
+          "--site-id",
+          "ok-site",
+        ]);
+        expect(code).not.toBe(0);
+        const parsed = JSON.parse(stdout) as { overall: string; checks: Array<{ name: string; status: string }> };
+        expect(parsed.overall).toBe("degraded");
+        const health = parsed.checks.find((c) => c.name === "health");
+        expect(health?.status).toBe("fail");
+        // The other endpoints should still report ok.
+        const openapi = parsed.checks.find((c) => c.name === "openapi");
+        expect(openapi?.status).toBe("ok");
+        const widget = parsed.checks.find((c) => c.name === "widget.js");
+        expect(widget?.status).toBe("ok");
+        const config = parsed.checks.find((c) => c.name === "config");
+        expect(config?.status).toBe("ok");
+      } finally {
+        fake.cleanup();
       }
     },
   );

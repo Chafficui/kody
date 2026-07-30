@@ -2,10 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": "./",
     "lib": ["ES2023"],
     "types": ["node"]
   },
-  "include": ["src"],
+  "include": ["src", "tests", "vitest.config.ts"],
   "references": [{ "path": "../shared" }]
 }
