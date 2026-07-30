@@ -134,12 +134,20 @@ export function ToolTester({ siteId, tool, onClose }: ToolTesterProps) {
       tool: tool.name,
       arguments: parsedArgs ?? {},
     });
-    const lines = [
-      `curl -X POST '${tool.endpoint.url}' \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -d '${body.replace(/'/g, "'\\''")}'`,
-    ];
-    return lines.join("\n");
+    // shell-escape a single-quoted string for the POSIX shell:
+    // 'foo' → '\'' replacement handles embedded single quotes safely.
+    const shq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    const method = (tool.endpoint.method ?? "POST").toUpperCase();
+    const headerLines: string[] = [`  -H 'Content-Type: application/json'`];
+    for (const [k, v] of Object.entries(tool.endpoint.headers ?? {})) {
+      if (typeof v !== "string") continue;
+      headerLines.push(`  -H ${shq(`${k}: ${v}`)}`);
+    }
+    return [
+      `curl -X ${method} ${shq(tool.endpoint.url)} \\`,
+      ...headerLines,
+      `  -d ${shq(body)}`,
+    ].join("\n");
   }, [tool, parsedArgs]);
 
   const copy = async (text: string, kind: "result" | "curl") => {

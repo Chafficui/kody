@@ -240,6 +240,7 @@ export default function SiteEditPage() {
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [testingToolIdx, setTestingToolIdx] = useState<number | null>(null);
+  const [toolTestError, setToolTestError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!siteId) return;
@@ -1452,6 +1453,15 @@ export default function SiteEditPage() {
               </div>
               <div>
                 <p className={labelClass}>Custom Tools</p>
+                {toolTestError && (
+                  <div
+                    role="alert"
+                    aria-live="polite"
+                    className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300"
+                  >
+                    {toolTestError}
+                  </div>
+                )}
                 <div className="space-y-3">
                   {form.tools.customTools.map((tool, tIdx) => (
                     <div
@@ -1463,7 +1473,16 @@ export default function SiteEditPage() {
                         <div className="flex items-center gap-3">
                           <button
                             type="button"
-                            onClick={() => setTestingToolIdx(tIdx)}
+                            onClick={() => {
+                              if (!tool.name.trim()) {
+                                setToolTestError(
+                                  `Tool #${tIdx + 1} needs a name before you can test it.`,
+                                );
+                                return;
+                              }
+                              setToolTestError(null);
+                              setTestingToolIdx(tIdx);
+                            }}
                             className="rounded-md border border-border px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
                           >
                             Test tool
@@ -1841,7 +1860,10 @@ export default function SiteEditPage() {
         <ToolTester
           siteId={form.siteId}
           tool={form.tools.customTools[testingToolIdx]}
-          onClose={() => setTestingToolIdx(null)}
+          onClose={() => {
+            setTestingToolIdx(null);
+            setToolTestError(null);
+          }}
         />
       )}
     </div>
