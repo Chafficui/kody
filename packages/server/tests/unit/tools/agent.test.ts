@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runAgent, type AgentCallbacks } from "../../../src/services/agent.js";
 import type { ToolExecutor } from "../../../src/services/tools/executor.js";
 import type { SiteConfig } from "@kody/shared";
@@ -92,6 +92,12 @@ describe("runAgent", () => {
   beforeEach(() => {
     mockFetch = vi.fn();
     vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    // Restore any globally stubbed `fetch` (and other globals) so they
+    // don't leak into the next test file that runs in the same worker.
+    vi.unstubAllGlobals();
   });
 
   it("streams a plain response with no tool calls", async () => {

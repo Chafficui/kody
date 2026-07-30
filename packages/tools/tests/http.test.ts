@@ -109,6 +109,30 @@ describe("httpCall", () => {
     expect(url).toContain("a=1");
     expect(url).toContain("b=two");
   });
+
+  it("treats a null body as no query params for GET (regression)", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "" });
+    await httpCall({ url: "https://x.test", method: "GET", body: null });
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://x.test/");
+    expect(url).not.toContain("?");
+  });
+
+  it("treats a null body as no query params for DELETE (regression)", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "" });
+    const r = await httpCall({ url: "https://x.test", method: "DELETE", body: null });
+    expect(r.ok).toBe(true);
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://x.test/");
+    expect(opts.method).toBe("DELETE");
+  });
+
+  it("treats an undefined body as no query params for GET", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "" });
+    await httpCall({ url: "https://x.test", method: "GET" });
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://x.test/");
+  });
 });
 
 describe("pluckPath", () => {

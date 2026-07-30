@@ -137,6 +137,17 @@ describe("Admin Tools API", () => {
     expect(res.status).toBe(400);
   });
 
+  it("returns 413 when arguments exceed MAX_ARG_BYTES", async () => {
+    // 20 KB payload — well over the 16 KB MAX_ARG_BYTES cap.
+    const big = { blob: "x".repeat(20 * 1024) };
+    const res = await request(createApp({ db }))
+      .post("/api/admin/sites/test-site/tools/ping/test")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ arguments: big });
+    expect(res.status).toBe(413);
+    expect(res.body.error?.message).toMatch(/too large/i);
+  });
+
   it("runs the tool and returns the response", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
