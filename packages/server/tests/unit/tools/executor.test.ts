@@ -266,14 +266,75 @@ describe("ToolExecutor", () => {
     delete process.env.MY_TEST_TOKEN;
   });
 
-  it("dispatches to a registered ToolRegistry handler when available", async () => {
+  it("dispatches to a registered ToolRegistry handler when declared as in-process", async () => {
     const exec = new ToolExecutor(null);
     exec.getRegistry().register("inproc", async () => ({ ok: true, message: "from registry" }));
     const result = await exec.execute(
       { id: "tc1", function: { name: "inproc", arguments: "{}" } },
-      makeConfig([]),
+      makeConfig([
+        {
+          name: "inproc",
+          description: "in-process tool",
+          parameters: { type: "object", properties: {}, required: [] },
+          endpoint: {
+            url: "kody://inproc/__kody_internal__",
+            method: "POST",
+            headers: {},
+            timeoutMs: 5000,
+          },
+        },
+      ]),
     );
     expect(result.ok).toBe(true);
     expect(result.result).toContain("from registry");
+  });
+
+  it("fails explicitly when an in-process handler has no matching customTools entry", async () => {
+    const exec = new ToolExecutor(null);
+    exec.getRegistry().register("ghost", async () => ({ ok: true, message: "should not run" }));
+    const result = await exec.execute(
+      { id: "tc1", function: { name: "ghost", arguments: "{}" } },
+      makeConfig([]),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.result).toContain("not declared");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("attaches an Idempotency-Key when retry is configured for a non-idempotent method", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "" });
+    const tool: CustomTool = {
+      ...httpTool,
+      name: "postWithRetry",
+      endpoint: { ...httpTool.endpoint, retry: { maxAttempts: 2, baseDelayMs: 5 } },
+    };
+    const exec = new ToolExecutor(null);
+    await exec.execute(
+      { id: "tc1", function: { name: "postWithRetry", arguments: "{}" } },
+      makeConfig([tool]),
+    );
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(typeof opts.headers["Idempotency-Key"]).toBe("string");
+    expect(opts.headers["Idempotency-Key"].length).toBeGreaterThan(0);
+  });
+
+  it("returns a structured auth failure when an env-resolved auth var is missing", async () => {
+    const tool: CustomTool = {
+      ...httpTool,
+      name: "missingEnv",
+      endpoint: {
+        ...httpTool.endpoint,
+        auth: { type: "bearer", value: "DOES_NOT_EXIST_TOKEN", fromEnv: true },
+      },
+    };
+    const exec = new ToolExecutor(null);
+    const result = await exec.execute(
+      { id: "tc1", function: { name: "missingEnv", arguments: "{}" } },
+      makeConfig([tool]),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.result).toContain("auth");
+    expect(result.result).toContain("DOES_NOT_EXIST_TOKEN");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

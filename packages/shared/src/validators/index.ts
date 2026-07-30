@@ -13,6 +13,7 @@ export {
   publicSiteConfigSchema,
   publicBrandingSchema,
   toPublicConfig,
+  redactConfigSecrets,
   type SiteConfig,
   type BrandingConfig,
   type AiProviderConfig,

@@ -52,14 +52,20 @@ export function createApp(
   );
   app.use(express.json({ limit: "2mb" }));
 
+  // CORS handling is intentionally split:
+  //  - Public widget APIs (/api/chat, /api/tickets, /api/sessions, /api/feedback)
+  //    enforce the per-site allowedOrigins allowlist via `siteAuth` (no
+  //    credentialed CORS, no reflected origin).
+  //  - The admin API requires bearer authentication for state-changing
+  //    methods (see adminAuth), which the React admin SPA already
+  //    sends. We deliberately do NOT reflect the request Origin into
+  //    `Access-Control-Allow-Origin` and do NOT set
+  //    `Access-Control-Allow-Credentials` — credentialed CORS + reflected
+  //    origin + cookie auth is a CSRF gadget.
+  //  - Preflight (OPTIONS) is short-circuited so cross-origin XHR from
+  //    the admin SPA still resolves, but the response carries no
+  //    CORS headers.
   app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-kody-site-id, Authorization");
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-    }
     if (req.method === "OPTIONS") {
       res.status(204).end();
       return;

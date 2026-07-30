@@ -1,14 +1,16 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { SiteConfig, CustomTool } from "@kody/shared";
 import type { ToolCallRequest, ToolDefinition } from "../ai-provider.js";
+import { INPROC_TOOL_MARKER, ToolRegistry } from "@kody/tools";
 import type { ToolHandler } from "@kody/tools";
 import type { KnowledgeRetriever } from "../knowledge/retriever.js";
 import { getBuiltinToolDefinitions, executeBuiltinTool } from "./builtin.js";
-import { ToolRegistry } from "@kody/tools";
 
 const BUILTIN_TOOL_NAMES = new Set(["knowledge_search", "create_ticket"]);
 
 const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+/** HTTP methods that are safe to retry without caller-supplied idempotency. */
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 
 /** Structured result returned by every tool call. `ok: false` is informational — never thrown. */
 export interface ToolCallResult {
@@ -19,9 +21,28 @@ export interface ToolCallResult {
   displayText: string;
 }
 
+/**
+ * Returns true only for transient network errors we want to retry. We do NOT
+ * treat every TypeError as retryable — fetch raises TypeError for many
+ * programmer errors (invalid URL, body-after-stream, etc.).
+ */
 function isRetryableError(err: unknown): boolean {
   if (err instanceof Error && err.name === "AbortError") return true;
-  if (err instanceof TypeError) return true;
+  if (err instanceof Error && "code" in err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (
+      code === "ECONNRESET" ||
+      code === "ETIMEDOUT" ||
+      code === "ECONNREFUSED" ||
+      code === "EAI_AGAIN" ||
+      code === "ENOTFOUND" ||
+      code === "EPIPE" ||
+      code === "EHOSTUNREACH" ||
+      code === "ENETUNREACH"
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -92,9 +113,27 @@ export class ToolExecutor {
       };
     }
 
-    // 1. Try the in-process handler registry (pre-built tools).
+    // 1. Try the in-process handler registry (pre-built tools). An in-process
+    //    tool MUST be declared in `config.tools.customTools` with the
+    //    in-process marker URL — that is what makes the registration visible
+    //    to the agent at definition time. If a handler is registered but the
+    //    tool isn't declared, fail explicitly rather than silently dispatching.
     const handler = this.registry.get(name);
     if (handler) {
+      const declared = config.tools.customTools.find(
+        (t) => t.name === name && t.endpoint.url === INPROC_TOOL_MARKER,
+      );
+      if (!declared) {
+        return {
+          toolCallId: call.id,
+          name,
+          ok: false,
+          result:
+            `In-process tool "${name}" is not declared in the site config; ` +
+            "register it in config.tools.customTools with the in-process marker URL.",
+          displayText: `Running ${name}...`,
+        };
+      }
       try {
         const out = await handler(args);
         const ok = out.ok ?? true;
@@ -102,7 +141,7 @@ export class ToolExecutor {
           toolCallId: call.id,
           name,
           ok,
-          result: typeof out === "string" ? out : JSON.stringify(out),
+          result: JSON.stringify(out),
           displayText: `Running ${name}...`,
         };
       } catch (err) {
@@ -160,27 +199,49 @@ export class ToolExecutor {
     args: Record<string, unknown>,
   ): Promise<ToolCallResult> {
     const { endpoint } = tool;
+    const methodIsIdempotent = IDEMPOTENT_METHODS.has(endpoint.method);
     const maxAttempts = endpoint.retry?.maxAttempts ?? 1;
     const baseDelay = endpoint.retry?.baseDelayMs ?? 250;
+    // Stable idempotency key for the whole call so receivers can dedupe
+    // retried POST/PUT/PATCH requests. Only generated when the call may
+    // actually be retried (idempotent method or explicit retry config).
+    const idempotencyKey =
+      methodIsIdempotent || (maxAttempts > 1) ? randomUUID() : undefined;
+    const effectiveMax = methodIsIdempotent || idempotencyKey ? maxAttempts : 1;
 
     const bodyText = JSON.stringify({ tool: tool.name, arguments: args });
 
+    // Build the headers. The auth resolution happens inside the try/catch
+    // so a missing env var becomes a structured tool failure, not a
+    // thrown error that escapes the executor's never-throw contract.
     const baseHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       ...endpoint.headers,
     };
+    if (idempotencyKey) baseHeaders["Idempotency-Key"] = idempotencyKey;
     if (endpoint.secret) {
       baseHeaders["X-Kody-Signature"] = createHmac("sha256", endpoint.secret)
         .update(bodyText)
         .digest("hex");
     }
     if (endpoint.auth) {
-      const value = resolveAuthValue(endpoint.auth.value, endpoint.auth.fromEnv ?? false);
-      if (endpoint.auth.type === "bearer") {
-        baseHeaders["Authorization"] = `Bearer ${value}`;
-      } else {
-        const headerName = endpoint.auth.headerName ?? "Authorization";
-        baseHeaders[headerName] = value;
+      try {
+        const value = resolveAuthValue(endpoint.auth.value, endpoint.auth.fromEnv ?? false);
+        if (endpoint.auth.type === "bearer") {
+          baseHeaders["Authorization"] = `Bearer ${value}`;
+        } else {
+          const headerName = endpoint.auth.headerName ?? "Authorization";
+          baseHeaders[headerName] = value;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Auth configuration error";
+        return {
+          toolCallId: callId,
+          name: tool.name,
+          ok: false,
+          result: `Tool execution failed (auth): ${message}`,
+          displayText: tool.description.slice(0, 50),
+        };
       }
     }
 
@@ -190,7 +251,7 @@ export class ToolExecutor {
       ok: false,
     };
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= effectiveMax; attempt++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), endpoint.timeoutMs);
       try {
@@ -199,12 +260,13 @@ export class ToolExecutor {
           headers: baseHeaders,
           body: bodyText,
           signal: controller.signal,
+          redirect: "manual",
         });
 
         const text = await response.text();
         clearTimeout(timer);
 
-        if (!response.ok && TRANSIENT_STATUS.has(response.status) && attempt < maxAttempts) {
+        if (!response.ok && TRANSIENT_STATUS.has(response.status) && attempt < effectiveMax) {
           lastResult = { status: response.status, text, ok: false };
           await sleep(baseDelay * 2 ** (attempt - 1));
           continue;
@@ -233,12 +295,24 @@ export class ToolExecutor {
         clearTimeout(timer);
         const message = err instanceof Error ? err.message : "Unknown error";
         lastResult = { status: 0, text: message, ok: false };
-        if (attempt < maxAttempts && isRetryableError(err)) {
+        const isAbort = err instanceof Error && err.name === "AbortError";
+        // AbortError retries are only safe for GET — POST/PUT/PATCH may
+        // have landed server-side before the timeout fired. The
+        // idempotency key makes retries safe for those methods.
+        if (isAbort && endpoint.method !== "GET" && !idempotencyKey) {
+          return {
+            toolCallId: callId,
+            name: tool.name,
+            ok: false,
+            result: `Tool execution failed (timeout): ${message}`,
+            displayText: tool.description.slice(0, 50),
+          };
+        }
+        if (attempt < effectiveMax && isRetryableError(err)) {
           await sleep(baseDelay * 2 ** (attempt - 1));
           continue;
         }
-        const label =
-          err instanceof Error && err.name === "AbortError" ? "timeout" : "network error";
+        const label = isAbort ? "timeout" : "network error";
         return {
           toolCallId: callId,
           name: tool.name,

@@ -339,3 +339,32 @@ export function toPublicConfig(config: SiteConfig): PublicSiteConfig {
     ...(Object.keys(sourceUrls).length > 0 ? { sourceUrls } : {}),
   };
 }
+
+/**
+ * Return a shallow-cloned SiteConfig with write-only tool secrets cleared.
+ *
+ * Admin endpoints that return the full SiteConfig (list, read, create,
+ * update) call this before JSON serialisation. The returned object keeps
+ * the same shape so the admin editor can still render each tool row, but
+ * `endpoint.secret` (HMAC signing key) and `auth.value` (bearer / api-key
+ * value) are replaced with an empty string. The next write from the
+ * admin UI must supply fresh values.
+ */
+export function redactConfigSecrets(config: SiteConfig): SiteConfig {
+  return {
+    ...config,
+    tools: {
+      ...config.tools,
+      customTools: config.tools.customTools.map((tool) => ({
+        ...tool,
+        endpoint: {
+          ...tool.endpoint,
+          secret: tool.endpoint.secret ? "" : tool.endpoint.secret,
+          auth: tool.endpoint.auth
+            ? { ...tool.endpoint.auth, value: "" }
+            : tool.endpoint.auth,
+        },
+      })),
+    },
+  };
+}
