@@ -1,7 +1,6 @@
 {
   "name": "@kody/cli",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "CLI companion for the Kody self-hosted AI chat widget. Scaffolds a working server with `init`, checks it with `doctor`, and exposes tool testing via `tools test`.",
   "bin": {
@@ -11,9 +10,13 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc --build",
     "dev": "tsx src/cli.ts",
+    "pretest": "tsc --build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
