@@ -23,8 +23,18 @@ export async function closeRl(): Promise<void> {
   }
 }
 
+/** Thrown when a prompt is invoked on a non-TTY stdin (e.g. piped input). */
+function nonInteractiveError(label: string): Error {
+  return new Error(
+    `Cannot prompt for ${label} on non-interactive stdin. Pass the value as a flag or via the matching environment variable.`,
+  );
+}
+
 /** Ask a free-form question. Returns the trimmed answer, or default on empty. */
 export async function ask(question: string, fallback?: string): Promise<string> {
+  if (!stdin.isTTY) {
+    throw nonInteractiveError(`"${question}"`);
+  }
   const suffix = fallback ? ` [${fallback}]` : "";
   const r = getRl();
   const answer = (await r.question(`${question}${suffix}: `)).trim();
@@ -33,11 +43,43 @@ export async function ask(question: string, fallback?: string): Promise<string> 
 
 /** Ask a yes/no question. Default is "yes" if the user just hits enter. */
 export async function confirm(question: string, defaultYes = true): Promise<boolean> {
+  if (!stdin.isTTY) {
+    throw nonInteractiveError(`yes/no "${question}"`);
+  }
   const hint = defaultYes ? "[Y/n]" : "[y/N]";
   const r = getRl();
   const answer = (await r.question(`${question} ${hint}: `)).trim().toLowerCase();
   if (answer === "") return defaultYes;
   return answer === "y" || answer === "yes";
+}
+
+/**
+ * Ask a sensitive question (API key, password, etc.) with echo disabled.
+ *
+ * Falls back to a visible prompt on a non-TTY stdin rather than echoing
+ * the secret on screen — callers that need a hard guarantee of privacy
+ * should pass the value as a flag or env var instead.
+ */
+export async function askSecret(question: string, fallback?: string): Promise<string> {
+  if (!stdin.isTTY) {
+    throw nonInteractiveError(`secret "${question}"`);
+  }
+  const suffix = fallback ? ` [${fallback}]` : "";
+  // Emit the prompt manually so we never need the readline `output` stream
+  // (which is what would cause the secret to echo on some terminals).
+  process.stdout.write(`${question}${suffix}: `);
+  const r = getRl();
+  // Mute the readline output stream while the user types so the keystrokes
+  // are not echoed to the terminal.
+  const saved = (r as unknown as { output?: NodeJS.WritableStream }).output;
+  (r as unknown as { output: NodeJS.WritableStream | null }).output = null;
+  try {
+    const answer = (await r.question("")).trim();
+    process.stdout.write("\n");
+    return answer || fallback || "";
+  } finally {
+    (r as unknown as { output: NodeJS.WritableStream | null | undefined }).output = saved;
+  }
 }
 
 /**

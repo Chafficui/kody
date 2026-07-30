@@ -36,13 +36,19 @@ program
   .description("Scaffold a new self-hosted Kody server (interactive or --non-interactive)")
   .option("--non-interactive", "don't ask questions; require every flag", false)
   .option("--server-dir <dir>", "where to write the server files", "./kody-server")
+  .option("--server-url <url>", "where the server will listen (e.g. http://localhost:3456); used by generated docs and `kody doctor`")
+  .option("--port <port>", "server port the docker-compose / healthcheck bind to", (v) => {
+    const n = Number.parseInt(v, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 65535) {
+      throw new Error(`Invalid --port "${v}". Must be a number between 1 and 65535.`);
+    }
+    return n;
+  }, 3456)
   .option("--base-url <url>", "OpenAI-compatible base URL (e.g. http://localhost:11434/v1)")
   .option("--model <name>", "model name to call")
-  .option("--api-key <key>", "API key for the provider (defaults to 'ollama')")
   .option("--site-id <id>", "site id (lowercase, alphanumeric, dashes)")
   .option("--origin <url>", "allowed origin for the embed widget")
   .option("--admin-email <email>", "initial admin email")
-  .option("--admin-password <password>", "initial admin password (min 8 chars)")
   .action(initCommand);
 
 program
@@ -61,7 +67,6 @@ tools
   .command("test <siteId> <toolName>")
   .description("Run a custom tool against POST /api/admin/sites/:siteId/tools/:toolName/test")
   .option("--server-url <url>", "server base URL", "http://localhost:3456")
-  .option("--token <token>", "admin bearer token (or set KODY_TOKEN)")
   .option("--args <json>", "tool arguments as a JSON object", "{}")
   .action(toolsTestCommand);
 

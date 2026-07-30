@@ -4,6 +4,16 @@
  * Interactive mode walks through 7 questions and writes 4 files into the
  * target directory. Non-interactive mode (`--non-interactive`) requires
  * every flag and skips the readline prompts entirely.
+ *
+ * Two important UX invariants:
+ *   1. The `origin` flag is the customer's website origin (used for CORS
+ *      and the embed snippet). The `--server-url` flag (or derived
+ *      `http://localhost:<port>`) is the address of the Kody server
+ *      itself. These are almost never the same value.
+ *   2. Secrets (`AI_API_KEY`, `ADMIN_PASSWORD`) are NEVER accepted as
+ *      flags — they're read from env vars (`KODY_API_KEY`,
+ *      `KODY_ADMIN_PASSWORD`) or via hidden prompts so they don't leak
+ *      into shell history or process listings.
  */
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -14,18 +24,18 @@ import {
   isValidSiteId,
   type InitOptions,
 } from "../lib/templates.js";
-import { ask, choose, confirm, closeRl } from "../lib/prompts.js";
+import { ask, askSecret, choose, confirm, closeRl } from "../lib/prompts.js";
 
 interface InitCommandOptions {
   nonInteractive: boolean;
   serverDir?: string;
+  serverUrl?: string;
+  port?: number;
   baseUrl?: string;
   model?: string;
-  apiKey?: string;
   siteId?: string;
   origin?: string;
   adminEmail?: string;
-  adminPassword?: string;
 }
 
 function randomSiteId(): string {
@@ -60,11 +70,16 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
 
   let baseUrl = opts.baseUrl;
   let model = opts.model;
-  let apiKey = opts.apiKey;
   let siteId = opts.siteId;
   let origin = opts.origin;
   let adminEmail = opts.adminEmail;
-  let adminPassword = opts.adminPassword;
+  // Secrets: never read from CLI flags. Prefer env vars (CI / scripts);
+  // fall back to a hidden prompt in interactive mode.
+  let apiKey = process.env.KODY_API_KEY;
+  let adminPassword = process.env.KODY_ADMIN_PASSWORD;
+  // Server URL: explicit flag wins, otherwise derived from --port.
+  let serverUrl = opts.serverUrl;
+  const port = opts.port ?? 3456;
 
   if (!opts.nonInteractive) {
     if (!baseUrl) {
@@ -83,7 +98,8 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
         : baseUrl?.includes("api.openai.com")
           ? "sk-..."
           : "EMPTY";
-      apiKey = await ask("API key (or 'ollama' / 'EMPTY' for local)", defaultKey);
+      // Hidden input: never echo the secret on screen.
+      apiKey = await askSecret("AI API key (or 'ollama' / 'EMPTY' for local)", defaultKey);
     }
     if (!siteId) {
       siteId = await ask("Site id (lowercase, alphanumeric, dashes)", randomSiteId());
@@ -95,26 +111,31 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
       adminEmail = await ask("Admin email", "admin@example.com");
     }
     if (!adminPassword) {
+      // The default is a strong generated password; if the user just hits
+      // enter we use it. We never echo the generated password back.
       const generated = generatePassword();
-      adminPassword = await ask("Admin password (min 8 chars)", generated);
+      adminPassword = await askSecret("Admin password (min 8 chars; enter to use generated)", generated);
+    }
+    if (!serverUrl) {
+      serverUrl = await ask("Where will the server listen?", `http://localhost:${port}`);
     }
   }
 
-  // Required-field validation (covers both modes).
+  // Required-field validation (covers both modes). The error mentions
+  // KODY_API_KEY / KODY_ADMIN_PASSWORD / --server-url so the user knows
+  // how to fix it from any of the supported flows.
   const required: Array<[string, string | undefined]> = [
     ["--base-url", baseUrl],
     ["--model", model],
-    ["--api-key", apiKey],
+    ["AI_API_KEY (env KODY_API_KEY or interactive)", apiKey],
     ["--site-id", siteId],
     ["--origin", origin],
     ["--admin-email", adminEmail],
-    ["--admin-password", adminPassword],
+    ["ADMIN_PASSWORD (env KODY_ADMIN_PASSWORD or interactive)", adminPassword],
   ];
   const missing = required.filter(([, v]) => !v).map(([k]) => k);
   if (missing.length > 0) {
-    throw new Error(
-      `Missing required options for non-interactive init: ${missing.join(", ")}`,
-    );
+    throw new Error(`Missing required options: ${missing.join(", ")}`);
   }
 
   // Type validation — the server will validate on the wire, but we can give
@@ -137,8 +158,18 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
     throw new Error(`Invalid --base-url "${baseUrl}".`);
   }
   if (adminPassword!.length < 8) {
-    throw new Error("--admin-password must be at least 8 characters.");
+    throw new Error("Admin password must be at least 8 characters.");
   }
+  if (!serverUrl) {
+    serverUrl = `http://localhost:${port}`;
+  }
+  try {
+    // eslint-disable-next-line no-new
+    new URL(serverUrl);
+  } catch {
+    throw new Error(`Invalid --server-url "${serverUrl}". Must be a full URL like http://localhost:3456.`);
+  }
+  const serverUrlClean = serverUrl.replace(/\/$/, "");
 
   const initOpts: InitOptions = {
     siteId: siteId!,
@@ -148,7 +179,8 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
     origin: origin!,
     adminEmail: adminEmail!,
     adminPassword: adminPassword!,
-    serverPort: 3456,
+    serverPort: port,
+    serverUrl: serverUrlClean,
   };
 
   mkdirSync(targetDir, { recursive: true });
@@ -168,12 +200,14 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
   console.log("  docker compose up -d");
   console.log("");
   console.log(`Then verify:`);
-  console.log(`  npx kody doctor --server-url ${origin}`);
+  console.log(`  npx kody doctor --server-url ${serverUrlClean}`);
   console.log("");
-  console.log("Embed the widget with:");
+  console.log("Embed the widget on your site:");
   console.log("");
   console.log(
-    `  <script src="${origin!.replace(/\/$/, "")}/widget.js" data-site-id="${siteId}" async></script>`,
+    `  <script src="${serverUrlClean}/widget.js" data-site-id="${siteId}" async></script>`,
   );
+  console.log("");
+  console.log(`(Allowed origin is "${origin}" — adjust in the admin UI if it changes.)`);
   console.log("");
 }
