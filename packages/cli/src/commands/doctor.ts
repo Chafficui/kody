@@ -28,11 +28,20 @@ interface CheckResult {
 
 const TIMEOUT_MS = 5000;
 
-async function timedFetch(url: string, init?: RequestInit): Promise<Response> {
+/**
+ * Run `body` under an AbortController that fires after `ms` milliseconds.
+ * The timer is cleared only after `body` resolves, so the timeout covers
+ * the full operation — including any response-body reads the caller does.
+ *
+ * @param ms   Total budget in milliseconds (covers fetch + body).
+ * @param body Async function receiving the controller so it can pass the
+ *             signal into fetch().
+ */
+async function withTimeout<T>(ms: number, body: (ctl: AbortController) => Promise<T>): Promise<T> {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  const t = setTimeout(() => ctl.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: ctl.signal });
+    return await body(ctl);
   } finally {
     clearTimeout(t);
   }
@@ -40,11 +49,16 @@ async function timedFetch(url: string, init?: RequestInit): Promise<Response> {
 
 async function checkHealth(serverUrl: string): Promise<CheckResult> {
   try {
-    const res = await timedFetch(`${serverUrl}/health`);
-    if (res.status !== 200) {
-      return { name: "health", status: "fail", detail: `HTTP ${res.status}` };
+    const body = (await withTimeout(TIMEOUT_MS, async (ctl) => {
+      const res = await fetch(`${serverUrl}/health`, { signal: ctl.signal });
+      if (res.status !== 200) {
+        return { __nonOk: res.status } as const;
+      }
+      return (await res.json()) as { status?: string };
+    })) as { status?: string } | { __nonOk: number };
+    if ("__nonOk" in body) {
+      return { name: "health", status: "fail", detail: `HTTP ${body.__nonOk}` };
     }
-    const body = (await res.json()) as { status?: string };
     if (body.status !== "ok") {
       return { name: "health", status: "warn", detail: `unexpected body: ${JSON.stringify(body)}` };
     }
@@ -58,15 +72,21 @@ async function checkConfig(serverUrl: string, siteId: string | undefined): Promi
   if (!siteId) {
     return { name: "config", status: "warn", detail: "skipped (pass --site-id to check a specific site)" };
   }
+  // URL-encode the path segment so unusual site ids (rare, but allowed)
+  // can't break the URL or accidentally introduce query parameters.
+  const safeSiteId = encodeURIComponent(siteId);
   try {
-    const res = await timedFetch(`${serverUrl}/api/config/${siteId}`);
-    if (res.status === 200) {
+    const status = await withTimeout(TIMEOUT_MS, async (ctl) => {
+      const res = await fetch(`${serverUrl}/api/config/${safeSiteId}`, { signal: ctl.signal });
+      return res.status;
+    });
+    if (status === 200) {
       return { name: "config", status: "ok", detail: `site "${siteId}" returns a config` };
     }
-    if (res.status === 404) {
+    if (status === 404) {
       return { name: "config", status: "fail", detail: `site "${siteId}" not found` };
     }
-    return { name: "config", status: "fail", detail: `HTTP ${res.status}` };
+    return { name: "config", status: "fail", detail: `HTTP ${status}` };
   } catch (err) {
     return { name: "config", status: "fail", detail: (err as Error).message };
   }
@@ -74,15 +94,20 @@ async function checkConfig(serverUrl: string, siteId: string | undefined): Promi
 
 async function checkOpenApi(serverUrl: string): Promise<CheckResult> {
   try {
-    const res = await timedFetch(`${serverUrl}/openapi.yaml`);
-    if (res.status !== 200) {
-      return { name: "openapi", status: "fail", detail: `HTTP ${res.status}` };
+    const result = await withTimeout(TIMEOUT_MS, async (ctl) => {
+      const res = await fetch(`${serverUrl}/openapi.yaml`, { signal: ctl.signal });
+      if (res.status !== 200) {
+        return { __nonOk: res.status } as const;
+      }
+      return { text: await res.text() } as const;
+    });
+    if ("__nonOk" in result) {
+      return { name: "openapi", status: "fail", detail: `HTTP ${result.__nonOk}` };
     }
-    const text = await res.text();
-    if (!text.startsWith("openapi:") && !text.startsWith("openapi ")) {
+    if (!result.text.startsWith("openapi:") && !result.text.startsWith("openapi ")) {
       return { name: "openapi", status: "warn", detail: "200 but body doesn't look like an OpenAPI document" };
     }
-    return { name: "openapi", status: "ok", detail: `spec served (${text.length} bytes)` };
+    return { name: "openapi", status: "ok", detail: `spec served (${result.text.length} bytes)` };
   } catch (err) {
     return { name: "openapi", status: "fail", detail: (err as Error).message };
   }
@@ -92,9 +117,12 @@ async function checkWidgetAsset(serverUrl: string): Promise<CheckResult> {
   // The widget IIFE is the thing end-users actually load. Make sure the
   // server is serving it.
   try {
-    const res = await timedFetch(`${serverUrl}/widget.js`, { method: "HEAD" });
-    if (res.status !== 200) {
-      return { name: "widget.js", status: "fail", detail: `HTTP ${res.status}` };
+    const status = await withTimeout(TIMEOUT_MS, async (ctl) => {
+      const res = await fetch(`${serverUrl}/widget.js`, { method: "HEAD", signal: ctl.signal });
+      return res.status;
+    });
+    if (status !== 200) {
+      return { name: "widget.js", status: "fail", detail: `HTTP ${status}` };
     }
     return { name: "widget.js", status: "ok", detail: "served" };
   } catch (err) {
@@ -103,7 +131,18 @@ async function checkWidgetAsset(serverUrl: string): Promise<CheckResult> {
 }
 
 export async function doctorCommand(opts: DoctorOptions): Promise<void> {
-  const serverUrl = opts.serverUrl.replace(/\/$/, "");
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(opts.serverUrl);
+  } catch {
+    throw new Error(`Invalid --server-url "${opts.serverUrl}". Must be a full URL like http://localhost:3456.`);
+  }
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new Error(
+      `Invalid --server-url "${opts.serverUrl}". Only http: and https: are supported.`,
+    );
+  }
+  const serverUrl = parsedUrl.toString().replace(/\/$/, "");
   const checks: CheckResult[] = [];
 
   checks.push(await checkHealth(serverUrl));

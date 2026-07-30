@@ -24,12 +24,42 @@ interface ToolTestResponse {
   error?: { message: string; code?: string };
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Validate the configured server URL before any request is sent so we don't
+ * accidentally send a bearer token to a typo'd host or to a non-loopback
+ * HTTP endpoint (which would expose the token in plaintext).
+ *
+ * @throws Error when the URL is missing, malformed, or uses HTTP for a
+ *         non-loopback host.
+ */
+function validateServerUrl(rawUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid --server-url "${rawUrl}". Must be a full URL like http://localhost:3456.`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(
+      `Invalid --server-url "${rawUrl}". Only http: and https: are supported.`,
+    );
+  }
+  if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) {
+    throw new Error(
+      `Refusing to send a bearer token over plain HTTP to a non-loopback host "${url.hostname}". Use https:// or http://localhost.`,
+    );
+  }
+  return url;
+}
+
 export async function toolsTestCommand(
   siteId: string,
   toolName: string,
   opts: ToolsTestOptions,
 ): Promise<void> {
-  const serverUrl = opts.serverUrl.replace(/\/$/, "");
+  const serverUrl = validateServerUrl(opts.serverUrl).toString().replace(/\/$/, "");
   const token = opts.token ?? process.env.KODY_TOKEN;
   if (!token) {
     throw new Error(
@@ -45,9 +75,14 @@ export async function toolsTestCommand(
   }
 
   const url = `${serverUrl}/api/admin/sites/${encodeURIComponent(siteId)}/tools/${encodeURIComponent(toolName)}/test`;
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 30_000);
+  // Timeout covers BOTH the fetch and the response body read. We do the
+  // body read inside the same try/finally so the abort timer stays armed
+  // until we're done consuming the body.
+  const TIMEOUT_MS = 30_000;
   let res: Response;
+  let text: string;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
   try {
     res = await fetch(url, {
       method: "POST",
@@ -58,13 +93,13 @@ export async function toolsTestCommand(
       body: JSON.stringify({ args }),
       signal: ctl.signal,
     });
+    text = await res.text();
   } catch (err) {
     throw new Error(`Request to ${url} failed: ${(err as Error).message}`);
   } finally {
     clearTimeout(t);
   }
 
-  const text = await res.text();
   let parsed: ToolTestResponse | null = null;
   if (text) {
     try {
@@ -83,7 +118,9 @@ export async function toolsTestCommand(
     process.exit(2);
   }
   if (res.status === 401) {
-    console.error("Unauthorized: the admin token is invalid or expired. Re-run `kody init` or POST /api/admin/login.");
+    console.error(
+      "Unauthorized: the admin token is invalid or expired. POST /api/admin/login to obtain a fresh token.",
+    );
     process.exit(1);
   }
   if (!res.ok) {
