@@ -7,13 +7,18 @@
  */
 
 import { z } from "zod";
-import { httpCall, pluckPath } from "./http.js";
+import { httpCall, pluckPath, type HttpCallResult } from "./http.js";
 import type { Tool, ToolHandler, ToolHandlerResult } from "./types.js";
 
 // -----------------------------------------------------------------------------
 // httpGet / httpPost — generic HTTP tools driven by the agent's arguments.
 // -----------------------------------------------------------------------------
 
+/**
+ * Shared argument schema for the agent-driven HTTP tools. The URL is
+ * validated syntactically here; the SSRF host check happens inside
+ * `httpCall` (which can resolve the hostname and block private ranges).
+ */
 const httpArgsSchema = z.object({
   url: z.string().url(),
   path: z.string().optional(),
@@ -21,16 +26,153 @@ const httpArgsSchema = z.object({
   query: z.string().optional(),
   /** JSON-encoded object of headers. */
   headers: z.string().optional(),
-  body: z.unknown().optional(),
+  /**
+   * For POST/PUT/PATCH: the JSON body sent as the request body.
+   * For GET/DELETE: serialised as a query string when present.
+   * Required for `http_post`, optional elsewhere.
+   */
+  body: z.string().optional(),
   /** Dotted path to extract from the JSON response. When set, the extracted value is the result. */
   jsonPath: z.string().optional(),
 });
 
 /**
+ * Parse a string-encoded JSON object. Validates that the result is a
+ * non-null, non-array, plain object whose values are all strings (when
+ * the caller asked for a `Record<string, string>`).
+ */
+function parseJsonObject(
+  raw: string | undefined,
+  errorLabel: string,
+  valueKind: "any" | "string" = "any",
+): Record<string, unknown> | undefined {
+  if (raw === undefined || raw.length === 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${errorLabel} must be a valid JSON object string`);
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error(`${errorLabel} must be a valid JSON object string`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (valueKind === "string") {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v !== "string") {
+        throw new Error(`${errorLabel} values must be strings`);
+      }
+      headers[k] = v;
+    }
+    return headers;
+  }
+  return obj;
+}
+
+/** Append a path suffix to a URL, joining with a single slash. */
+function buildUrl(base: string, path?: string): string {
+  if (!path) return base;
+  const trimmedBase = base.replace(/\/+$/, "");
+  const trimmedPath = path.replace(/^\/+/, "");
+  return trimmedPath ? `${trimmedBase}/${trimmedPath}` : base;
+}
+
+/** Convert the httpCall structured result into a ToolHandlerResult. */
+function resultToHandlerResult(
+  result: HttpCallResult,
+  jsonPath: string | undefined,
+): ToolHandlerResult {
+  if (!result.ok) {
+    return { ok: false, message: `HTTP ${result.status}: ${result.text.slice(0, 500)}` };
+  }
+  if (jsonPath) {
+    return { ok: true, message: "ok", data: pluckPath(result.json, jsonPath) };
+  }
+  return { ok: true, message: "ok", data: result.json ?? result.text };
+}
+
+/**
+ * Shared handler for the agent-driven HTTP tools. Performs the SSRF / URL
+ * check before dispatching to `httpCall`, parses optional `query` /
+ * `headers` JSON, and returns the structured `ToolHandlerResult`.
+ */
+async function runHttpCall(
+  rawArgs: Record<string, unknown>,
+  defaultMethod: "GET" | "POST",
+  requireBody: boolean,
+  allowedHosts: string[] | undefined,
+): Promise<ToolHandlerResult> {
+  const parsed = httpArgsSchema.safeParse(rawArgs);
+  if (!parsed.success) {
+    return { ok: false, message: `Invalid args: ${parsed.error.message}` };
+  }
+  if (requireBody && !parsed.data.body) {
+    return { ok: false, message: "body is required" };
+  }
+  const fullUrl = buildUrl(parsed.data.url, parsed.data.path);
+
+  let queryObj: Record<string, unknown> | undefined;
+  try {
+    queryObj = parseJsonObject(parsed.data.query, "query", "any");
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : "Invalid query JSON",
+    };
+  }
+  let headersObj: Record<string, string> | undefined;
+  try {
+    headersObj = parseJsonObject(
+      parsed.data.headers,
+      "headers",
+      "string",
+    ) as Record<string, string> | undefined;
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : "Invalid headers JSON",
+    };
+  }
+
+  let bodyObj: unknown;
+  if (parsed.data.body) {
+    try {
+      bodyObj = JSON.parse(parsed.data.body);
+    } catch {
+      return { ok: false, message: "body must be a valid JSON string" };
+    }
+  }
+
+  let result: HttpCallResult;
+  try {
+    result = await httpCall({
+      url: fullUrl,
+      method: defaultMethod,
+      headers: headersObj,
+      body: bodyObj,
+      allowedHosts,
+    });
+  } catch (err) {
+    // httpCall throws on programmer errors (bad URL, SSRF block, etc.) —
+    // surface as a structured failure so the executor contract holds.
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : "HTTP call failed",
+    };
+  }
+  return resultToHandlerResult(result, parsed.data.jsonPath);
+}
+
+/**
  * GET tool. Use when the upstream is read-only.
  *
  * The definition is fixed; the agent supplies per-call `url`, optional
- * `path` suffix, `query`, and `jsonPath` extraction.
+ * `path` suffix, `query`, `headers`, and `jsonPath` extraction.
  */
 export const httpGet: Tool = {
   definition: {
@@ -61,51 +203,7 @@ export const httpGet: Tool = {
       },
     },
   },
-  handler: async (args: Record<string, unknown>) => {
-    const parsed = httpArgsSchema.safeParse(args);
-    if (!parsed.success) {
-      return { ok: false, message: `Invalid args: ${parsed.error.message}` };
-    }
-    const fullUrl = parsed.data.path
-      ? `${parsed.data.url.replace(/\/+$/, "")}/${parsed.data.path.replace(/^\/+/, "")}`
-      : parsed.data.url;
-
-    let queryObj: Record<string, unknown> | undefined;
-    if (parsed.data.query) {
-      try {
-        queryObj = JSON.parse(parsed.data.query);
-      } catch {
-        return { ok: false, message: "query must be a valid JSON object string" };
-      }
-    }
-    let headersObj: Record<string, string> | undefined;
-    if (parsed.data.headers) {
-      try {
-        headersObj = JSON.parse(parsed.data.headers);
-      } catch {
-        return { ok: false, message: "headers must be a valid JSON object string" };
-      }
-    }
-
-    const result = await httpCall({
-      url: fullUrl,
-      method: "GET",
-      headers: headersObj,
-      body: queryObj,
-    });
-    if (!result.ok) {
-      return { ok: false, message: `HTTP ${result.status}: ${result.text.slice(0, 500)}` };
-    }
-    if (parsed.data.jsonPath) {
-      const extracted = pluckPath(result.json, parsed.data.jsonPath);
-      return {
-        ok: true,
-        message: "ok",
-        data: extracted,
-      };
-    }
-    return { ok: true, message: "ok", data: result.json ?? result.text };
-  },
+  handler: (args) => runHttpCall(args, "GET", false, undefined),
 };
 
 /** POST tool. Same shape as httpGet, but the body is sent as JSON. */
@@ -135,39 +233,7 @@ export const httpPost: Tool = {
       },
     },
   },
-  handler: async (args: Record<string, unknown>) => {
-    const raw = args as { url?: unknown; body?: unknown; path?: unknown; headers?: unknown; jsonPath?: unknown };
-    if (typeof raw.url !== "string" || typeof raw.body !== "string") {
-      return { ok: false, message: "url and body are required strings" };
-    }
-    let bodyObj: unknown;
-    try {
-      bodyObj = JSON.parse(raw.body);
-    } catch {
-      return { ok: false, message: "body must be a valid JSON string" };
-    }
-    let headersObj: Record<string, string> | undefined;
-    if (typeof raw.headers === "string" && raw.headers.length > 0) {
-      try {
-        headersObj = JSON.parse(raw.headers);
-      } catch {
-        return { ok: false, message: "headers must be a valid JSON object string" };
-      }
-    }
-
-    const fullUrl = typeof raw.path === "string" && raw.path
-      ? `${raw.url.replace(/\/+$/, "")}/${raw.path.replace(/^\/+/, "")}`
-      : raw.url;
-
-    const result = await httpCall({ url: fullUrl, method: "POST", headers: headersObj, body: bodyObj });
-    if (!result.ok) {
-      return { ok: false, message: `HTTP ${result.status}: ${result.text.slice(0, 500)}` };
-    }
-    if (typeof raw.jsonPath === "string" && raw.jsonPath) {
-      return { ok: true, message: "ok", data: pluckPath(result.json, raw.jsonPath) };
-    }
-    return { ok: true, message: "ok", data: result.json ?? result.text };
-  },
+  handler: (args) => runHttpCall(args, "POST", true, undefined),
 };
 
 // -----------------------------------------------------------------------------
@@ -183,6 +249,11 @@ export interface WebhookOptions {
   auth?: { type: "bearer" | "apiKey"; value: string; headerName?: string };
   /** Optional retry policy. */
   retry?: { maxAttempts: number; baseDelayMs: number };
+  /**
+   * Optional list of allowed hostnames. When set, requests to any host
+   * not in this list are rejected before the network call.
+   */
+  allowedHosts?: string[];
 }
 
 /**
@@ -222,20 +293,32 @@ export function webhook(url: string, options: WebhookOptions = {}): Tool {
       } catch {
         return { ok: false, message: "payload must be a valid JSON string" };
       }
-      const result = await httpCall({
-        url,
-        method: "POST",
-        headers: options.headers,
-        body,
-        secret: options.secret,
-        auth: options.auth,
-        retry: options.retry,
-      });
+      let result: HttpCallResult;
+      try {
+        result = await httpCall({
+          url,
+          method: "POST",
+          headers: options.headers,
+          body,
+          secret: options.secret,
+          auth: options.auth,
+          retry: options.retry,
+          allowedHosts: options.allowedHosts,
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : "HTTP call failed",
+        };
+      }
       if (!result.ok) {
         return { ok: false, message: `Webhook returned ${result.status}: ${result.text.slice(0, 300)}` };
       }
-      const ok: ToolHandlerResult = { ok: true, message: "Webhook delivered", data: result.json ?? result.text };
-      return ok;
+      return {
+        ok: true,
+        message: "Webhook delivered",
+        data: result.json ?? result.text,
+      };
     },
   };
 }
@@ -274,13 +357,21 @@ export function slack(options: SlackOptions): Tool {
     handler: async (args: Record<string, unknown>) => {
       const text = typeof args.text === "string" ? args.text : "";
       if (!text) return { ok: false, message: "text is required" };
-      const result = await httpCall({
-        url: "https://slack.com/api/chat.postMessage",
-        method: "POST",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: { channel: options.channel, text },
-        auth: { type: "bearer", value: options.token },
-      });
+      let result: HttpCallResult;
+      try {
+        result = await httpCall({
+          url: "https://slack.com/api/chat.postMessage",
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: { channel: options.channel, text },
+          auth: { type: "bearer", value: options.token },
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : "Slack request failed",
+        };
+      }
       const body = (result.json ?? {}) as { ok?: boolean; ts?: string; error?: string };
       if (!result.ok || body.ok === false) {
         return {
@@ -355,16 +446,24 @@ export function linear(options: LinearOptions): Tool {
         }
       }
       const labelIds = [...(options.labelIds ?? []), ...extraLabels];
-      const result = await httpCall({
-        url: LINEAR_GRAPHQL,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: {
-          query: ISSUE_CREATE_MUTATION,
-          variables: { input: { teamId: options.teamId, title, description, labelIds } },
-        },
-        auth: { type: "bearer", value: options.apiKey },
-      });
+      let result: HttpCallResult;
+      try {
+        result = await httpCall({
+          url: LINEAR_GRAPHQL,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: {
+            query: ISSUE_CREATE_MUTATION,
+            variables: { input: { teamId: options.teamId, title, description, labelIds } },
+          },
+          auth: { type: "bearer", value: options.apiKey },
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : "Linear request failed",
+        };
+      }
       if (!result.ok) {
         return { ok: false, message: `Linear API returned ${result.status}: ${result.text.slice(0, 300)}` };
       }
@@ -442,13 +541,21 @@ export function sendgridEmail(options: SendgridEmailOptions): Tool {
         content,
         ...(options.replyTo ? { reply_to: { email: options.replyTo } } : {}),
       };
-      const result = await httpCall({
-        url: "https://api.sendgrid.com/v3/mail/send",
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: payload,
-        auth: { type: "bearer", value: options.apiKey },
-      });
+      let result: HttpCallResult;
+      try {
+        result = await httpCall({
+          url: "https://api.sendgrid.com/v3/mail/send",
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          auth: { type: "bearer", value: options.apiKey },
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : "SendGrid request failed",
+        };
+      }
       if (!result.ok && result.status !== 202) {
         return { ok: false, message: `SendGrid ${result.status}: ${result.text.slice(0, 300)}` };
       }

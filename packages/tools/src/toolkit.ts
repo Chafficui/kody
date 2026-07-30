@@ -31,6 +31,14 @@ export interface ToolkitExport {
 }
 
 /**
+ * Marker URL for in-process tools — the executor recognises this and
+ * dispatches via the `ToolRegistry` instead of attempting an HTTP fetch.
+ * The marker is non-fetchable (it's a non-routable scheme + host) so an
+ * accidental network call would fail before reaching any real service.
+ */
+export const INPROC_TOOL_MARKER = "kody://inproc/__kody_internal__";
+
+/**
  * A registry of name → handler pairs. The server's ToolExecutor consults
  * the registry before falling back to the HTTP endpoint configured in the
  * SiteConfig, so a pre-built tool can run entirely in-process.
@@ -77,7 +85,7 @@ function toolToCustomTool(tool: Tool): CustomTool {
     description: tool.definition.function.description,
     parameters: tool.definition.function.parameters as unknown as CustomTool["parameters"],
     endpoint: {
-      url: "about:blank",
+      url: INPROC_TOOL_MARKER,
       method: "POST",
       headers: {},
       timeoutMs: 10_000,
@@ -91,30 +99,26 @@ function toolToCustomTool(tool: Tool): CustomTool {
 export class Toolkit {
   private readonly entries: ToolkitEntry[] = [];
 
-  /** Add a pre-built tool. Throws when the name is already registered. */
+  /** Add a pre-built tool. Throws when the alias or the tool's original function name is already registered. */
   add(tool: Tool): this {
     const name = tool.definition.function.name;
-    if (this.entries.some((e) => e.name === name)) {
-      throw new Error(`Tool "${name}" is already registered in this toolkit`);
-    }
+    this.assertNoCollision(name, tool.definition.function.name);
     this.entries.push({ name, definition: tool.definition, handler: tool.handler });
     return this;
   }
 
-  /** Add a tool with a custom name (the definition name stays the same). */
-  addAs(name: string, tool: Tool): this {
-    if (this.entries.some((e) => e.name === name)) {
-      throw new Error(`Tool "${name}" is already registered in this toolkit`);
-    }
+  /** Add a tool with a custom alias. The original `tool.definition.function.name` is preserved on the definition. */
+  addAs(alias: string, tool: Tool): this {
+    this.assertNoCollision(alias, tool.definition.function.name);
     const renamed: Tool = {
-      definition: { ...tool.definition, function: { ...tool.definition.function, name } },
+      definition: { ...tool.definition, function: { ...tool.definition.function, name: alias } },
       handler: tool.handler,
     };
-    this.entries.push({ name, definition: renamed.definition, handler: renamed.handler });
+    this.entries.push({ name: alias, definition: renamed.definition, handler: renamed.handler });
     return this;
   }
 
-  /** Remove a tool by name. */
+  /** Remove a tool by alias. */
   remove(name: string): this {
     const idx = this.entries.findIndex((e) => e.name === name);
     if (idx >= 0) this.entries.splice(idx, 1);
@@ -126,7 +130,7 @@ export class Toolkit {
     return this.entries.length;
   }
 
-  /** List of registered names. */
+  /** List of registered aliases. */
   names(): string[] {
     return this.entries.map((e) => e.name);
   }
@@ -148,5 +152,23 @@ export class Toolkit {
       builtinTools: { knowledgeSearch: true },
       handlers,
     };
+  }
+
+  /**
+   * Throw when `alias` is already registered, or when the incoming tool's
+   * original function name is already represented under a different alias.
+   */
+  private assertNoCollision(alias: string, originalName: string): void {
+    if (this.entries.some((e) => e.name === alias)) {
+      throw new Error(`Tool "${alias}" is already registered in this toolkit`);
+    }
+    if (alias !== originalName) {
+      const clash = this.entries.find((e) => e.definition.function.name === originalName);
+      if (clash) {
+        throw new Error(
+          `Tool "${originalName}" is already registered as "${clash.name}" in this toolkit`,
+        );
+      }
+    }
   }
 }

@@ -38,6 +38,7 @@ export {
 export {
   Toolkit,
   ToolRegistry,
+  INPROC_TOOL_MARKER,
   type ToolkitEntry,
   type ToolkitExport,
 } from "./toolkit.js";
