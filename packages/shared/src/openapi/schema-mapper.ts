@@ -166,19 +166,21 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
       const required: string[] = [];
       for (const [key, value] of Object.entries(shape ?? {})) {
         const child = value as z.ZodTypeAny;
+        // A property is "not required" if it is optional OR has a default
+        // value (Zod fills in the default when the field is missing, so
+        // OpenAPI consumers should treat it as optional too).
         const { schema, optional } = unwrapOptional(child);
+        const hasDefault = hasZodDefault(child);
         const mapped = zodToOas(schema, { path: `${ctx.path}.${key}` });
-        // Preserve `.default()` so consumers can see the default value.
-        const d = (child._def as { typeName: string; defaultValue?: () => unknown });
-        if (d.typeName === "ZodDefault") {
+        if (hasDefault) {
           try {
-            mapped.default = (d.defaultValue as () => unknown)();
+            mapped.default = (getZodDefaultValue(child) as () => unknown)();
           } catch {
             // Some defaults throw (e.g. random IDs) — skip them.
           }
         }
         properties[key] = mapped;
-        if (!optional) required.push(key);
+        if (!optional && !hasDefault) required.push(key);
       }
       const out: OasSchema = {
         type: "object",
@@ -255,4 +257,32 @@ function unwrapOptional(schema: z.ZodTypeAny): { schema: z.ZodTypeAny; optional:
     return { schema: schema._def.innerType as z.ZodTypeAny, optional: true };
   }
   return { schema, optional: false };
+}
+
+/**
+ * Walk through ZodOptional / ZodDefault wrappers and report whether any
+ * `ZodDefault` is present. Properties that carry a default are
+ * effectively optional — Zod supplies the default when the field is
+ * missing — so they should not appear in the OpenAPI `required` array.
+ */
+function hasZodDefault(schema: z.ZodTypeAny): boolean {
+  let cur: z.ZodTypeAny = schema;
+  // We may see ZodOptional(ZodDefault(...)) — check both wrapper kinds.
+  // (Zod never nests ZodDefault under ZodDefault.)
+  for (let i = 0; i < 3; i++) {
+    const t = (cur._def as { typeName: string }).typeName;
+    if (t === "ZodDefault") return true;
+    if (t === "ZodOptional") {
+      cur = (cur._def as { innerType: z.ZodTypeAny }).innerType;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+/** Return the ZodDefault's `defaultValue` function if one is present. */
+function getZodDefaultValue(schema: z.ZodTypeAny): (() => unknown) | undefined {
+  const { defaultValue } = schema._def as { defaultValue?: () => unknown };
+  return defaultValue;
 }
