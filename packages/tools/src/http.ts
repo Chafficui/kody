@@ -164,7 +164,7 @@ async function assertSafeTarget(url: string, allowedHosts?: string[]): Promise<v
   }
 
   // Resolve the host and check that every resolved address is public.
-  let addresses: dns.LookupAddress[];
+  let addresses: Array<{ address: string; family: number }>;
   try {
     addresses = await dns.lookup(host, { all: true, verbatim: true });
   } catch (err) {

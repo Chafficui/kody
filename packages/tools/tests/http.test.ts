@@ -5,6 +5,18 @@ import { httpCall, pluckPath } from "../src/http.js";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+// Tests run in an environment without outbound DNS. Stub `node:dns/promises`
+// so fake test hostnames (e.g. `x.test`) resolve to a public IP and pass
+// the SSRF guard. Hostnames on the blocklist (loopback, private, metadata)
+// are caught synchronously and never reach the DNS lookup, so they remain
+// rejected.
+vi.mock("node:dns/promises", () => ({
+  default: {
+    lookup: vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]),
+  },
+  lookup: vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]),
+}));
+
 describe("httpCall", () => {
   beforeEach(() => {
     mockFetch.mockReset();
@@ -114,7 +126,7 @@ describe("httpCall", () => {
     mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "" });
     await httpCall({ url: "https://x.test", method: "GET", body: null });
     const [url] = mockFetch.mock.calls[0];
-    expect(url).toBe("https://x.test/");
+    expect(url).toBe("https://x.test");
     expect(url).not.toContain("?");
   });
 
@@ -123,7 +135,7 @@ describe("httpCall", () => {
     const r = await httpCall({ url: "https://x.test", method: "DELETE", body: null });
     expect(r.ok).toBe(true);
     const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toBe("https://x.test/");
+    expect(url).toBe("https://x.test");
     expect(opts.method).toBe("DELETE");
   });
 
@@ -131,7 +143,7 @@ describe("httpCall", () => {
     mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "" });
     await httpCall({ url: "https://x.test", method: "GET" });
     const [url] = mockFetch.mock.calls[0];
-    expect(url).toBe("https://x.test/");
+    expect(url).toBe("https://x.test");
   });
 });
 

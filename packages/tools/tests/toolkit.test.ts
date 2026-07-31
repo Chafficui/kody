@@ -17,6 +17,24 @@ import {
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+// Tests run in an environment without outbound DNS. Stub `node:dns/promises`
+// so any hostname resolves to a public IP and the SSRF guard accepts it.
+// Hostnames that match the SSRF blocklist (localhost, 127.0.0.1, private
+// ranges, metadata, etc.) are caught by the synchronous check and never
+// reach the DNS lookup, so they remain rejected.
+vi.mock("node:dns/promises", () => ({
+  default: {
+    lookup: vi.fn().mockImplementation(async (host: string) => {
+      if (host === "1.2.3.4") return [{ address: "1.2.3.4", family: 4 }];
+      return [{ address: "93.184.216.34", family: 4 }];
+    }),
+  },
+  lookup: vi.fn().mockImplementation(async (host: string) => {
+    if (host === "1.2.3.4") return [{ address: "1.2.3.4", family: 4 }];
+    return [{ address: "93.184.216.34", family: 4 }];
+  }),
+}));
+
 function makeStubTool(name: string): Tool {
   return {
     definition: {
@@ -154,13 +172,16 @@ describe("prebuilt factories", () => {
     expect(result.data).toBe(42);
   });
 
-  it("httpGet treats a null body as no query params", async () => {
+  it("httpGet with no body omits the query string on the URL", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ ok: true }),
     });
-    const result = await httpGet.handler({ url: "https://api.example.com/ping", body: null });
+    // httpGet's `body` is a JSON-encoded string; null is rejected by the
+    // arg schema. The underlying null-body handling for httpCall is
+    // covered in tests/http.test.ts.
+    const result = await httpGet.handler({ url: "https://api.example.com/ping" });
     expect(result.ok).toBe(true);
     const [calledUrl] = mockFetch.mock.calls[0];
     expect(calledUrl).toBe("https://api.example.com/ping");
