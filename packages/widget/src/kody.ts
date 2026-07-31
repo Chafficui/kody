@@ -128,6 +128,7 @@ export class KodyWidget {
   private sidebar: ChatSidebar | null = null;
   private sidebarOpen = false;
   private focusTrapTeardown: (() => void) | null = null;
+  private openTransitionTimer: ReturnType<typeof setTimeout> | null = null;
   private keyboardTeardown: (() => void) | null = null;
   private resolvedTheme: "light" | "dark" | "auto" = "light";
   private strings: WidgetStrings = en;
@@ -412,25 +413,29 @@ export class KodyWidget {
     this.unreadCount = 0;
     setBubbleBadge(this.bubble, 0);
     const win = this.chatWindow;
-    const onEnd = () => {
-      win.element.removeEventListener("transitionend", onEnd);
-      win.scrollToBottom();
+    // Guard the trap install so transitionend and the fallback timer can
+    // both run, but only the first one to fire actually installs the
+    // trap. Without this, a rapid open/close/open cycle could leak a
+    // keydown listener (e.g. when a keyboard shortcut toggles fast).
+    const installTrap = (): void => {
+      if (this.focusTrapTeardown) return;
       focusFirst(win.element, win.inputBar.input);
       this.focusTrapTeardown = installFocusTrap({
         container: win.element,
         onEscape: () => this.close(),
       });
     };
+    const onEnd = () => {
+      win.element.removeEventListener("transitionend", onEnd);
+      win.scrollToBottom();
+      installTrap();
+    };
     win.element.addEventListener("transitionend", onEnd, { once: true });
     // Fallback in case the transitionend event never fires (e.g. reduced motion).
-    setTimeout(() => {
-      if (this.isOpen && this.focusTrapTeardown === null) {
-        focusFirst(win.element, win.inputBar.input);
-        this.focusTrapTeardown = installFocusTrap({
-          container: win.element,
-          onEscape: () => this.close(),
-        });
-      }
+    // Track the timer so close() can cancel a stale one from a prior open cycle.
+    this.openTransitionTimer = setTimeout(() => {
+      this.openTransitionTimer = null;
+      if (this.isOpen) installTrap();
     }, 260);
     for (const cb of this.openCallbacks) cb();
     this.emitter.emit({ type: "open" });
@@ -441,6 +446,10 @@ export class KodyWidget {
     this.isOpen = false;
     this.chatWindow.setOpen(false);
     setBubbleIcon(this.bubble, false, this.strings);
+    if (this.openTransitionTimer) {
+      clearTimeout(this.openTransitionTimer);
+      this.openTransitionTimer = null;
+    }
     if (this.focusTrapTeardown) {
       this.focusTrapTeardown();
       this.focusTrapTeardown = null;
@@ -464,6 +473,10 @@ export class KodyWidget {
     this.saveState();
     this.abortController?.abort();
     this.stopAttention?.();
+    if (this.openTransitionTimer) {
+      clearTimeout(this.openTransitionTimer);
+      this.openTransitionTimer = null;
+    }
     if (this.focusTrapTeardown) {
       this.focusTrapTeardown();
       this.focusTrapTeardown = null;
