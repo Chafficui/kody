@@ -124,10 +124,14 @@ function isBlockedHost(hostname: string): boolean {
   const lower = hostname.toLowerCase();
   if (lower === "localhost" || lower.endsWith(".localhost")) return true;
   if (lower === "metadata.google.internal" || lower === "metadata") return true;
-  // raw IP literal?
-  if (net.isIP(lower)) {
-    if (lower.includes(":")) return isPrivateOrLoopbackIPv6(lower);
-    return isPrivateOrLoopbackIPv4(lower);
+  // raw IP literal? `URL#hostname` keeps the `[...]` wrapper for IPv6, so
+  // strip the brackets before the IP-class check.
+  const ipLiteral = lower.startsWith("[") && lower.endsWith("]")
+    ? lower.slice(1, -1)
+    : lower;
+  if (net.isIP(ipLiteral)) {
+    if (ipLiteral.includes(":")) return isPrivateOrLoopbackIPv6(ipLiteral);
+    return isPrivateOrLoopbackIPv4(ipLiteral);
   }
   return false;
 }

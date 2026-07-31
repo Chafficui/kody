@@ -17,6 +17,8 @@ import type { Tool, ToolHandler } from "./types.js";
 export interface ToolkitEntry {
   /** Stable name used to look up the tool at runtime. Must be unique. */
   name: string;
+  /** Original function name from the tool's definition before any `addAs` rename. */
+  originalName: string;
   definition: Tool["definition"];
   handler: ToolHandler;
 }
@@ -103,18 +105,29 @@ export class Toolkit {
   add(tool: Tool): this {
     const name = tool.definition.function.name;
     this.assertNoCollision(name, tool.definition.function.name);
-    this.entries.push({ name, definition: tool.definition, handler: tool.handler });
+    this.entries.push({
+      name,
+      originalName: name,
+      definition: tool.definition,
+      handler: tool.handler,
+    });
     return this;
   }
 
   /** Add a tool with a custom alias. The original `tool.definition.function.name` is preserved on the definition. */
   addAs(alias: string, tool: Tool): this {
-    this.assertNoCollision(alias, tool.definition.function.name);
+    const originalName = tool.definition.function.name;
+    this.assertNoCollision(alias, originalName);
     const renamed: Tool = {
       definition: { ...tool.definition, function: { ...tool.definition.function, name: alias } },
       handler: tool.handler,
     };
-    this.entries.push({ name: alias, definition: renamed.definition, handler: renamed.handler });
+    this.entries.push({
+      name: alias,
+      originalName,
+      definition: renamed.definition,
+      handler: renamed.handler,
+    });
     return this;
   }
 
@@ -157,18 +170,22 @@ export class Toolkit {
   /**
    * Throw when `alias` is already registered, or when the incoming tool's
    * original function name is already represented under a different alias.
+   *
+   * The collision check uses `entry.originalName` rather than the (possibly
+   * renamed) `definition.function.name`, so a tool added via `addAs` is
+   * still discoverable by its original name. The check always runs — even
+   * when `alias === originalName` — so an `add(tool)` after `addAs(alias, ...)`
+   * with the same original name is still rejected.
    */
   private assertNoCollision(alias: string, originalName: string): void {
     if (this.entries.some((e) => e.name === alias)) {
       throw new Error(`Tool "${alias}" is already registered in this toolkit`);
     }
-    if (alias !== originalName) {
-      const clash = this.entries.find((e) => e.definition.function.name === originalName);
-      if (clash) {
-        throw new Error(
-          `Tool "${originalName}" is already registered as "${clash.name}" in this toolkit`,
-        );
-      }
+    const clash = this.entries.find((e) => e.originalName === originalName);
+    if (clash) {
+      throw new Error(
+        `Tool "${originalName}" is already registered as "${clash.name}" in this toolkit`,
+      );
     }
   }
 }

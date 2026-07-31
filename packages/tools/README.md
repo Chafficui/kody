@@ -12,7 +12,7 @@ const toolkit = new Toolkit()
   .add(webhook("https://hooks.zapier.com/abc/", { secret: process.env.ZAPIER_SECRET }))
   .add(slack({ token: process.env.SLACK_TOKEN, channel: "#support" }))
   .add(linear({ apiKey: process.env.LINEAR_API_KEY, teamId: "engineering" }))
-  .add(sendgridEmail({ apiKey: process.env.SENDGRID_API_KEY, from: "bot@example.com" }));
+  .add(sendgridEmail({ apiKey: process.env.EMAIL_PROVIDER_API_KEY, from: "bot@example.com" }));
 
 const { customTools, builtinTools, handlers } = toolkit.export();
 // Drop `customTools` into SiteConfig.tools.customTools.
