@@ -49,10 +49,12 @@ export function parseChord(raw: string): Chord | null {
 /**
  * Returns null if the spec is invalid / disabled; otherwise a list of
  * chords to listen for. `false` or empty string means "no shortcut".
+ * `true` and `undefined` both return the default chord list so hosts
+ * can opt-in with a boolean.
  */
 export function parseShortcutSpec(spec: string | boolean | undefined): Chord[] | null {
   if (spec === false) return null;
-  if (spec === undefined) {
+  if (spec === true || spec === undefined) {
     return [parseChord("cmd+k")!, parseChord("/")!];
   }
   if (typeof spec !== "string") return null;

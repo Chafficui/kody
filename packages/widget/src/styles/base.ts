@@ -1053,7 +1053,17 @@ a.kody-source-link:hover {
   .kody-input,
   .kody-ticket-form input,
   .kody-ticket-form textarea {
-    border-width: 2px;
+    /* Inputs ship border:none in the base styles, so border-width alone
+       is invisible. Restore a visible style. */
+    border: 2px solid currentColor;
+  }
+  /* The base input has outline:none for a clean look; in high-contrast
+     mode that's a keyboard-focus regression. Bring back a visible ring. */
+  .kody-input:focus,
+  .kody-ticket-form input:focus,
+  .kody-ticket-form textarea:focus {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
   }
   .kody-message-content th,
   .kody-message-content td {
@@ -1063,7 +1073,17 @@ a.kody-source-link:hover {
   .kody-send-btn,
   .kody-suggestion-btn,
   .kody-starter-btn {
-    border-width: 2px;
+    /* These buttons also default to border:none — pair the width with
+       a visible style so the high-contrast outline is actually drawn. */
+    border: 2px solid currentColor;
+  }
+  /* Focus indicator on the icon buttons (also disabled by default). */
+  .kody-header-btn:focus-visible,
+  .kody-send-btn:focus-visible,
+  .kody-suggestion-btn:focus-visible,
+  .kody-starter-btn:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
   }
 }
 
