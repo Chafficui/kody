@@ -130,6 +130,7 @@ export class KodyWidget {
   private focusTrapTeardown: (() => void) | null = null;
   private openTransitionTimer: ReturnType<typeof setTimeout> | null = null;
   private keyboardTeardown: (() => void) | null = null;
+  private darkModeListener: ((e: MediaQueryListEvent) => void) | null = null;
   private resolvedTheme: "light" | "dark" | "auto" = "light";
   private strings: WidgetStrings = en;
   private locale: string | undefined;
@@ -197,9 +198,12 @@ export class KodyWidget {
     if (this.resolvedTheme === "auto") {
       this.darkModeQuery = window.matchMedia("(prefers-color-scheme: dark)");
       this.host.setAttribute("data-theme", this.darkModeQuery.matches ? "dark" : "light");
-      this.darkModeQuery.addEventListener("change", (e) => {
+      // Store the listener reference so destroy() / setTheme() can
+      // detach the same function (removeEventListener needs identity).
+      this.darkModeListener = (e) => {
         this.host.setAttribute("data-theme", e.matches ? "dark" : "light");
-      });
+      };
+      this.darkModeQuery.addEventListener("change", this.darkModeListener);
     } else {
       this.host.setAttribute("data-theme", this.resolvedTheme);
     }
@@ -485,6 +489,11 @@ export class KodyWidget {
       this.keyboardTeardown();
       this.keyboardTeardown = null;
     }
+    if (this.darkModeQuery && this.darkModeListener) {
+      this.darkModeQuery.removeEventListener("change", this.darkModeListener);
+      this.darkModeQuery = null;
+      this.darkModeListener = null;
+    }
     this.emitter.removeAll();
     this.host.remove();
   }
@@ -514,7 +523,6 @@ export class KodyWidget {
       this.open();
     }
     this.handleSend(text);
-    this.emitter.emit({ type: "message", role: "user", content: text });
     return Promise.resolve();
   }
 
@@ -567,17 +575,20 @@ export class KodyWidget {
    */
   setTheme(theme: "light" | "dark" | "auto"): void {
     this.resolvedTheme = theme;
+    // Detach any prior auto listener before re-binding or switching away.
+    if (this.darkModeQuery && this.darkModeListener) {
+      this.darkModeQuery.removeEventListener("change", this.darkModeListener);
+      this.darkModeQuery = null;
+      this.darkModeListener = null;
+    }
     if (theme === "auto") {
       this.darkModeQuery = window.matchMedia("(prefers-color-scheme: dark)");
       this.host.setAttribute("data-theme", this.darkModeQuery.matches ? "dark" : "light");
-      this.darkModeQuery.addEventListener("change", (e) => {
+      this.darkModeListener = (e) => {
         this.host.setAttribute("data-theme", e.matches ? "dark" : "light");
-      });
+      };
+      this.darkModeQuery.addEventListener("change", this.darkModeListener);
     } else {
-      if (this.darkModeQuery) {
-        this.darkModeQuery.removeEventListener("change", () => {});
-        this.darkModeQuery = null;
-      }
       this.host.setAttribute("data-theme", theme);
     }
   }
@@ -776,6 +787,7 @@ export class KodyWidget {
     }
 
     this.messages.push({ role: "user", content: message });
+    this.emitter.emit({ type: "message", role: "user", content: message });
     this.persistMessages();
 
     const userMsg = renderMessage({ role: "user", content: message });
