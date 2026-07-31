@@ -57,6 +57,53 @@ describe("OpenAPI generator", () => {
     expect((props.siteId as { pattern: string }).pattern).toBe("^[a-z0-9-]+$");
   });
 
+  it("exposes a redacted SiteConfig read model that masks secrets", () => {
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const read = spec.components.schemas.SiteConfigRead;
+    expect(read).toBeDefined();
+    const ai = ((read.properties as Record<string, Record<string, unknown>>).ai ?? {}) as Record<string, unknown>;
+    const aiProps = (ai.properties as Record<string, Record<string, unknown>>) ?? {};
+    // The AI apiKey is masked — the description tells consumers not to rely
+    // on this field for the real value.
+    expect(aiProps.apiKey).toBeDefined();
+    expect((aiProps.apiKey as { description: string }).description).toMatch(/Redacted/);
+  });
+
+  it("emits named KnowledgeSource union branches", () => {
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    expect(spec.components.schemas.KnowledgeSourceText).toBeDefined();
+    expect(spec.components.schemas.KnowledgeSourceUrl).toBeDefined();
+    expect(spec.components.schemas.KnowledgeSourceFile).toBeDefined();
+    expect(spec.components.schemas.KnowledgeSourceFaq).toBeDefined();
+  });
+
+  it("emits named TicketProvider union branches", () => {
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    expect(spec.components.schemas.TicketProviderJira).toBeDefined();
+    expect(spec.components.schemas.TicketProviderGithub).toBeDefined();
+    expect(spec.components.schemas.TicketProviderLinear).toBeDefined();
+    expect(spec.components.schemas.TicketProviderEmail).toBeDefined();
+    expect(spec.components.schemas.TicketProviderWebhook).toBeDefined();
+  });
+
+  it("emits a CustomTool component derived from the Zod schema", () => {
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const tool = spec.components.schemas.CustomTool;
+    expect(tool).toBeDefined();
+    expect(tool.type).toBe("object");
+    // The required array must reflect the actual Zod schema (no defaults).
+    const required = (tool.required as string[] | undefined) ?? [];
+    expect(required).toEqual(expect.arrayContaining(["name", "description", "parameters", "endpoint"]));
+  });
+
   it("maps the KnowledgeSource discriminated union with a discriminator", () => {
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
@@ -79,6 +126,52 @@ describe("OpenAPI generator", () => {
     expect(Array.isArray(ticketProvider.oneOf)).toBe(true);
     expect((ticketProvider.oneOf as unknown[]).length).toBeGreaterThanOrEqual(5);
     expect(ticketProvider.discriminator).toEqual({ propertyName: "provider" });
+  });
+
+  it("requires x-kody-site-id on every widget-facing operation", () => {
+    const spec = buildOpenApiSpec() as {
+      paths: Record<string, { get?: { parameters?: Array<{ name: string; in: string }> }; post?: { parameters?: Array<{ name: string; in: string }> }; delete?: { parameters?: Array<{ name: string; in: string }> } }>;
+    };
+    const widgetOps: Array<[string, string]> = [
+      ["/api/config/{siteId}", "get"],
+      ["/api/chat", "post"],
+      ["/api/tickets", "post"],
+      ["/api/sessions/{sessionId}", "delete"],
+      ["/api/feedback", "post"],
+    ];
+    for (const [path, method] of widgetOps) {
+      const op = spec.paths[path]?.[method as "get" | "post" | "delete"];
+      expect(op, `operation ${method.toUpperCase()} ${path} should exist`).toBeDefined();
+      const params = op?.parameters ?? [];
+      const header = params.find((p) => p.name === "x-kody-site-id" && p.in === "header");
+      expect(header, `${method.toUpperCase()} ${path} must declare x-kody-site-id header`).toBeDefined();
+    }
+  });
+
+  it("does not list ZodDefault fields as required", () => {
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    // brandingSchema has most fields defaulted. None of them should appear
+    // in `required` even though the inner `colors` sub-object is not optional.
+    const branding = spec.components.schemas.brandingSchema as Record<string, unknown> | undefined;
+    // branding is mapped under the name it was registered with, not the
+    // variable name. The buildComponents() function names it `brandingSchema`.
+    // (The map is "schema name -> object", and we registered under `BrandingConfig`.)
+    // Either name works depending on registration; check the *content* rather
+    // than the key.
+    void branding;
+    const tickets = spec.components.schemas.TicketsConfig as Record<string, unknown> | undefined;
+    // The TicketsConfig object has lots of .default() fields; the outer
+    // object's required[] should be empty (every field is either defaulted
+    // or optional).
+    const required = (tickets?.required as string[] | undefined) ?? [];
+    // If required is present, none of its entries may be a ZodDefault
+    // property. We don't have a full registry here, so just check that
+    // common-default fields are not in required.
+    for (const defaulted of ["enabled", "promptMessage", "providers", "requiredFields"]) {
+      expect(required, `${defaulted} has a .default() and must not be required`).not.toContain(defaulted);
+    }
   });
 
   it("documents bearer + cookie auth under components.securitySchemes", () => {
@@ -113,20 +206,18 @@ describe("packages/shared/openapi.yaml", () => {
     }
   });
 
-  it("stays in sync with the build function", () => {
-    // Re-run the build function and dump it; the parsed result should
-    // match the parsed committed file. Comparing parsed objects (rather
-    // than raw text) avoids noise from key ordering, whitespace, and
-    // trailing newlines that don't change the document's meaning.
+  it("stays in sync with the build function (text-level)", () => {
+    // Byte-level compare so any drift in formatting, ordering, or
+    // comment placement trips the test. Run `pnpm --filter @kody/shared
+    // generate:openapi` to update the committed file if this fails for
+    // an intentional reason.
     const text = readFileSync(openapiYamlPath, "utf8");
-    const parsed = yaml.load(text);
     const regenerated = yaml.dump(buildOpenApiSpec(), {
       lineWidth: 120,
       noRefs: true,
       flowLevel: -1,
       sortKeys: false,
     });
-    const reparsed = yaml.load(regenerated);
-    expect(reparsed).toEqual(parsed);
+    expect(regenerated).toBe(text);
   });
 });
