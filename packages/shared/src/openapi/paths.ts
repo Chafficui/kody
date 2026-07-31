@@ -50,6 +50,24 @@ export type OasPathItem = {
   patch?: OasOperation;
 };
 
+/** Security entry for operations that require admin auth. Accepts either a
+ *  bearer token (CLI / scripts) or the httpOnly session cookie (browser). */
+const adminSecurity: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { sessionCookie: [] }];
+
+/**
+ * Parameter object for the `x-kody-site-id` header. Required on every
+ * widget-facing endpoint so the server can look up the right site config
+ * (the host header only tells it the customer's domain, not which Kody
+ * site on a multi-tenant install is being asked for).
+ */
+const siteIdHeader: OasParameter = {
+  name: "x-kody-site-id",
+  in: "header",
+  required: true,
+  description: "Lowercase site id (e.g. `my-shop`). Required on every widget-facing endpoint.",
+  schema: { type: "string", pattern: "^[a-z0-9-]+$" },
+};
+
 export const paths: Record<string, OasPathItem> = {
   "/health": {
     summary: "Liveness probe",
@@ -93,9 +111,17 @@ export const paths: Record<string, OasPathItem> = {
           description: "Lowercase alphanumeric site identifier.",
           schema: { type: "string", pattern: "^[a-z0-9-]+$" },
         },
+        siteIdHeader,
       ],
       responses: {
-        "200": { description: "Public site configuration" },
+        "200": {
+          description: "Public site configuration",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/PublicSiteConfig" },
+            },
+          },
+        },
         "404": { description: "Site not found or disabled" },
       },
     },
@@ -108,6 +134,7 @@ export const paths: Record<string, OasPathItem> = {
       description:
         "Streams a server-sent event response. The first event is always a `session` event with a server-issued session id. Subsequent events are `delta` (token chunks), `tool_start` / `tool_end`, `sources`, `suggestions`, `blocked`, `error`, and finally `done`.",
       tags: ["chat"],
+      parameters: [siteIdHeader],
       requestBody: {
         required: true,
         content: {
@@ -138,6 +165,7 @@ export const paths: Record<string, OasPathItem> = {
       description:
         "Sends the conversation transcript (optionally) plus the required fields to the first configured ticket provider (Jira, GitHub, Linear, email, or webhook).",
       tags: ["tickets"],
+      parameters: [siteIdHeader],
       requestBody: {
         required: true,
         content: {
@@ -147,7 +175,14 @@ export const paths: Record<string, OasPathItem> = {
         },
       },
       responses: {
-        "200": { description: "Ticket created" },
+        "200": {
+          description: "Ticket created",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TicketResult" },
+            },
+          },
+        },
         "400": { description: "Tickets not enabled or invalid request" },
       },
     },
@@ -166,6 +201,7 @@ export const paths: Record<string, OasPathItem> = {
           required: true,
           schema: { type: "string" },
         },
+        siteIdHeader,
       ],
       responses: {
         "204": { description: "Session deleted" },
@@ -179,6 +215,7 @@ export const paths: Record<string, OasPathItem> = {
       summary: "Submit feedback for a chat message",
       description: "Stores `(sessionId, messageIndex, rating)` for the admin dashboard's quality view.",
       tags: ["feedback"],
+      parameters: [siteIdHeader],
       requestBody: {
         required: true,
         content: {
@@ -232,16 +269,26 @@ export const paths: Record<string, OasPathItem> = {
     get: {
       summary: "List all sites",
       tags: ["admin", "sites"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
-        "200": { description: "Array of site configurations" },
+        "200": {
+          description: "Array of redacted site configurations (secrets are not echoed back).",
+          content: {
+            "application/json": {
+              schema: {
+                type: "array",
+                items: { $ref: "#/components/schemas/SiteConfigRead" },
+              },
+            },
+          },
+        },
         "401": { description: "Unauthenticated" },
       },
     },
     post: {
       summary: "Create a new site",
       tags: ["admin", "sites"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       requestBody: {
         required: true,
         content: {
@@ -271,16 +318,23 @@ export const paths: Record<string, OasPathItem> = {
     get: {
       summary: "Fetch a site configuration",
       tags: ["admin", "sites"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
-        "200": { description: "Site configuration" },
+        "200": {
+          description: "Redacted site configuration (secrets are not echoed back).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/SiteConfigRead" },
+            },
+          },
+        },
         "404": { description: "Site not found" },
       },
     },
     put: {
       summary: "Update a site",
       tags: ["admin", "sites"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       requestBody: {
         required: true,
         content: {
@@ -297,7 +351,7 @@ export const paths: Record<string, OasPathItem> = {
     delete: {
       summary: "Delete a site",
       tags: ["admin", "sites"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
         "200": { description: "Site deleted" },
         "404": { description: "Site not found" },
@@ -318,7 +372,7 @@ export const paths: Record<string, OasPathItem> = {
     get: {
       summary: "List scrape results",
       tags: ["admin", "scraping"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
         "200": { description: "Array of scrape results" },
       },
@@ -334,7 +388,7 @@ export const paths: Record<string, OasPathItem> = {
     post: {
       summary: "Trigger a re-scrape",
       tags: ["admin", "scraping"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
         "200": { description: "Scrape triggered" },
         "404": { description: "Source not found" },
@@ -347,7 +401,7 @@ export const paths: Record<string, OasPathItem> = {
     get: {
       summary: "List admin users",
       tags: ["admin", "users"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
         "200": { description: "Array of users" },
       },
@@ -355,7 +409,7 @@ export const paths: Record<string, OasPathItem> = {
     post: {
       summary: "Create an admin user",
       tags: ["admin", "users"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       requestBody: {
         required: true,
         content: {
@@ -379,7 +433,7 @@ export const paths: Record<string, OasPathItem> = {
     delete: {
       summary: "Delete an admin user",
       tags: ["admin", "users"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
         "200": { description: "User deleted" },
         "400": { description: "Cannot delete yourself" },
@@ -393,7 +447,7 @@ export const paths: Record<string, OasPathItem> = {
     get: {
       summary: "List recent log entries",
       tags: ["admin", "logs"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       parameters: [
         { name: "level", in: "query", schema: { type: "string", enum: ["debug", "info", "warn", "error"] } },
         { name: "since", in: "query", schema: { type: "integer", description: "Epoch millis" } },
@@ -406,7 +460,7 @@ export const paths: Record<string, OasPathItem> = {
     delete: {
       summary: "Clear the in-memory log buffer",
       tags: ["admin", "logs"],
-      security: [{ bearerAuth: [] }],
+      security: adminSecurity,
       responses: {
         "200": { description: "Logs cleared" },
       },

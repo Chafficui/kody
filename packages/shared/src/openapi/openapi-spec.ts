@@ -13,6 +13,16 @@ import {
   knowledgeSourceSchema,
   ticketProviderSchema,
   toolsSchema,
+  customToolSchema,
+  textKnowledgeSourceSchema,
+  urlKnowledgeSourceSchema,
+  fileKnowledgeSourceSchema,
+  faqKnowledgeSourceSchema,
+  jiraTicketProviderSchema,
+  githubTicketProviderSchema,
+  linearTicketProviderSchema,
+  emailTicketProviderSchema,
+  webhookTicketProviderSchema,
   chatRequestSchema,
   chatResponseEventSchema,
   feedbackRequestSchema,
@@ -22,14 +32,76 @@ import {
   adminCreateUserSchema,
 } from "../validators/index.js";
 
+/**
+ * Strip server-side secrets from a `SiteConfig` for the read model.
+ *
+ * The server validates secrets on input (create/update) but should never
+ * echo them back in GET responses. This shape matches what the public
+ * `PublicSiteConfig` already does for the embed widget, plus it preserves
+ * enough information for the admin UI to know a field is configured
+ * (e.g. `apiKey: "***"`) so operators can edit without seeing the value.
+ */
+function redactSiteConfigForRead(oas: Record<string, unknown>): Record<string, unknown> {
+  const props = (oas.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const ai = (props.ai?.properties as Record<string, unknown> | undefined) ?? {};
+  const aiRedacted: Record<string, unknown> = { ...ai, apiKey: { type: "string", description: "Redacted; create/update only." } };
+  const tickets = (props.tickets?.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const ticketProviders = (tickets.providers?.items as Record<string, unknown> | undefined) ?? {};
+  const branches = (ticketProviders.oneOf as Array<Record<string, unknown>> | undefined) ?? [];
+  const redactedBranches = branches.map((branch) => {
+    const branchProps = (branch.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+    const providerEnum = ((branchProps.provider as { enum?: string[] } | undefined)?.enum ?? []) as string[];
+    if (branchProps.apiToken) {
+      branchProps.apiToken = { type: "string", description: "Redacted; create/update only." };
+    }
+    if (branchProps.token && providerEnum.includes("github")) {
+      branchProps.token = { type: "string", description: "Redacted; create/update only." };
+    }
+    if (branchProps.apiKey && providerEnum.includes("linear")) {
+      branchProps.apiKey = { type: "string", description: "Redacted; create/update only." };
+    }
+    if (branchProps.smtpPass) {
+      branchProps.smtpPass = { type: "string", description: "Redacted; create/update only." };
+    }
+    if (branchProps.secret) {
+      branchProps.secret = { type: "string", description: "Redacted; create/update only." };
+    }
+    branch.properties = branchProps;
+    return branch;
+  });
+  if (redactedBranches.length > 0) {
+    ticketProviders.oneOf = redactedBranches;
+  }
+  tickets.providers = ticketProviders;
+  props.tickets = { ...tickets };
+  props.ai = { ...aiRedacted };
+  return { ...oas, properties: props };
+}
+
 /** Build the `components.schemas` block by mapping each Zod validator. */
 function buildComponents(): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   out.SiteConfig = zodToOas(siteConfigSchema);
+  // Redacted read model used by the admin GET endpoints.
+  out.SiteConfigRead = redactSiteConfigForRead(out.SiteConfig as Record<string, unknown>);
   out.PublicSiteConfig = zodToOas(publicSiteConfigSchema);
   out.KnowledgeSource = zodToOas(knowledgeSourceSchema);
+  // Named union branches so SDK generators can reference them by $ref
+  // instead of seeing an inline oneOf they can't resolve.
+  out.KnowledgeSourceText = zodToOas(textKnowledgeSourceSchema);
+  out.KnowledgeSourceUrl = zodToOas(urlKnowledgeSourceSchema);
+  out.KnowledgeSourceFile = zodToOas(fileKnowledgeSourceSchema);
+  out.KnowledgeSourceFaq = zodToOas(faqKnowledgeSourceSchema);
   out.TicketProvider = zodToOas(ticketProviderSchema);
+  out.TicketProviderJira = zodToOas(jiraTicketProviderSchema);
+  out.TicketProviderGithub = zodToOas(githubTicketProviderSchema);
+  out.TicketProviderLinear = zodToOas(linearTicketProviderSchema);
+  out.TicketProviderEmail = zodToOas(emailTicketProviderSchema);
+  out.TicketProviderWebhook = zodToOas(webhookTicketProviderSchema);
   out.ToolsConfig = zodToOas(toolsSchema);
+  // CustomTool is the same Zod the server validates against, so any
+  // future change flows into the public spec automatically.
+  out.CustomTool = zodToOas(customToolSchema);
   out.ChatRequest = zodToOas(chatRequestSchema);
   out.ChatResponseEvent = zodToOas(chatResponseEventSchema);
   // Wrap the discriminated-union event schema into a stream-friendly form.
@@ -50,38 +122,6 @@ function buildComponents(): Record<string, unknown> {
   out.TicketResult = zodToOas(ticketResultSchema);
   out.AdminLogin = zodToOas(adminLoginSchema);
   out.AdminCreateUser = zodToOas(adminCreateUserSchema);
-  // `customToolSchema` is a private Zod object inside `toolsSchema`. We
-  // expose a hand-mirrored fragment under its own name so SDK generators
-  // can produce a typed `CustomTool` interface. (The full definition lives
-  // inside the `ToolsConfig` schema above.)
-  out.CustomTool = {
-    type: "object",
-    description: "An HTTP-callable custom tool the assistant can invoke.",
-    required: ["name", "description", "parameters", "endpoint"],
-    properties: {
-      name: { type: "string", pattern: "^[a-z_][a-z0-9_]*$" },
-      description: { type: "string", maxLength: 1000 },
-      parameters: {
-        type: "object",
-        required: ["type", "properties"],
-        properties: {
-          type: { type: "string", enum: ["object"] },
-          properties: { type: "object", additionalProperties: true },
-          required: { type: "array", items: { type: "string" } },
-        },
-      },
-      endpoint: {
-        type: "object",
-        required: ["url", "method"],
-        properties: {
-          url: { type: "string", format: "uri" },
-          method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH"] },
-          headers: { type: "object", additionalProperties: { type: "string" } },
-          timeoutMs: { type: "integer", minimum: 1000, maximum: 30000 },
-        },
-      },
-    },
-  };
   return out;
 }
 
@@ -139,7 +179,7 @@ export function buildOpenApiSpec(): {
           type: "apiKey",
           in: "cookie",
           name: "kody_session",
-          description: "httpOnly cookie set by the browser on admin login.",
+          description: "httpOnly cookie set by the browser on admin login. Alternative to bearerAuth for browser-based admin clients.",
         },
       },
     },

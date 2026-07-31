@@ -88,6 +88,19 @@ const faqKnowledgeSchema = z.object({
   url: z.string().url().optional(),
 });
 
+/**
+ * Each branch is exported individually so the OpenAPI generator can
+ * reference them by name (`$ref: "#/components/schemas/KnowledgeSourceText"`)
+ * instead of inlining an anonymous oneOf. The discriminated union still
+ * validates the same shapes — these are just the named handles.
+ */
+export {
+  textKnowledgeSchema as textKnowledgeSourceSchema,
+  urlKnowledgeSchema as urlKnowledgeSourceSchema,
+  fileKnowledgeSchema as fileKnowledgeSourceSchema,
+  faqKnowledgeSchema as faqKnowledgeSourceSchema,
+};
+
 export const knowledgeSourceSchema = z.discriminatedUnion("type", [
   textKnowledgeSchema,
   urlKnowledgeSchema,
@@ -151,6 +164,19 @@ const webhookProviderSchema = z.object({
   secret: z.string().optional(),
 });
 
+/**
+ * Each branch is exported individually so the OpenAPI generator can
+ * reference them by name (`$ref: "#/components/schemas/TicketProviderJira"`)
+ * instead of inlining an anonymous oneOf.
+ */
+export {
+  jiraProviderSchema as jiraTicketProviderSchema,
+  githubProviderSchema as githubTicketProviderSchema,
+  linearProviderSchema as linearTicketProviderSchema,
+  emailProviderSchema as emailTicketProviderSchema,
+  webhookProviderSchema as webhookTicketProviderSchema,
+};
+
 export const ticketProviderSchema = z.discriminatedUnion("provider", [
   jiraProviderSchema,
   githubProviderSchema,
@@ -202,6 +228,13 @@ const customToolSchema = z.object({
     timeoutMs: z.number().int().min(1000).max(30000).default(10000),
   }),
 });
+
+/**
+ * Exported so the OpenAPI generator can emit a `CustomTool` component
+ * derived from the same Zod definition the server validates against,
+ * instead of mirroring the shape by hand.
+ */
+export { customToolSchema };
 
 export const toolsSchema = z.object({
   enabled: z.boolean().default(false),
