@@ -82,26 +82,40 @@ export class KodyApiClient {
       "Content-Type": "application/json",
       "x-kody-site-id": this.siteId,
     };
+    if (extra) Object.assign(headers, extra);
+    return headers;
+  }
+
+  /**
+   * Build the per-message header set: site id + the current identity
+   * (user id + traits) and userContext, with a bounded size check so
+   * a single misconfigured site can't blow up the request line.
+   */
+  private buildMessageHeaders(): Record<string, string> {
+    const headers: Record<string, string> = this.buildHeaders();
     if (this.identity) {
       headers["x-kody-user-id"] = this.identity.userId;
       if (this.identity.traits) {
-        try {
-          // The server reads the x-kody-user-traits header as JSON.
-          headers["x-kody-user-traits"] = JSON.stringify(this.identity.traits);
-        } catch {
-          // ignore non-serialisable traits
-        }
+        const traits = this.trySerialize(this.identity.traits, 4096);
+        if (traits !== undefined) headers["x-kody-user-traits"] = traits;
       }
     }
     if (this.userContext) {
-      try {
-        headers["x-kody-user-context"] = JSON.stringify(this.userContext);
-      } catch {
-        // ignore
-      }
+      const ctx = this.trySerialize(this.userContext, 4096);
+      if (ctx !== undefined) headers["x-kody-user-context"] = ctx;
     }
-    if (extra) Object.assign(headers, extra);
     return headers;
+  }
+
+  private trySerialize(value: unknown, maxBytes: number): string | undefined {
+    let raw: string;
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+    if (raw === undefined || raw.length > maxBytes) return undefined;
+    return raw;
   }
 
   async fetchConfig(): Promise<PublicSiteConfig> {
@@ -118,7 +132,7 @@ export class KodyApiClient {
     try {
       await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
         method: "DELETE",
-        headers: this.buildHeaders(),
+        headers: this.buildMessageHeaders(),
       });
     } catch {
       // best-effort deletion
@@ -133,7 +147,7 @@ export class KodyApiClient {
     try {
       await fetch(`${this.baseUrl}/api/feedback`, {
         method: "POST",
-        headers: this.buildHeaders(),
+        headers: this.buildMessageHeaders(),
         body: JSON.stringify({
           siteId: this.siteId,
           sessionId,
@@ -160,7 +174,7 @@ export class KodyApiClient {
     try {
       res = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",
-        headers: this.buildHeaders(),
+        headers: this.buildMessageHeaders(),
         body: JSON.stringify({
           siteId: this.siteId,
           sessionId,

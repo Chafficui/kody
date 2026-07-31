@@ -30,8 +30,8 @@ declare global {
   }
 }
 
-function resolveServerUrl(config: { serverUrl?: string }): string {
-  if (config.serverUrl) return config.serverUrl;
+function resolveServerUrl(serverUrl: string | undefined): string {
+  if (serverUrl) return serverUrl;
   if (_currentScript?.src) {
     try {
       return new URL(_currentScript.src).origin;
@@ -43,57 +43,23 @@ function resolveServerUrl(config: { serverUrl?: string }): string {
   return "";
 }
 
-function buildConfigFromScript(): Record<string, unknown> | null {
-  if (typeof document === "undefined" || !_currentScript) return null;
-  const dataset = _currentScript.dataset ?? {};
-  if (!dataset.siteId) return null;
-  return {
-    siteId: dataset.siteId,
-    serverUrl: dataset.serverUrl,
-    branding: {
-      name: dataset.name,
-      position: dataset.position,
-      primaryColor: dataset.primaryColor,
-    },
-    locale: dataset.locale,
-    openOnLoad: dataset.openOnLoad,
-    prefillMessage: dataset.prefillMessage,
-    userId: dataset.userId,
-    userTraits: dataset.userTraits ? safeJsonParse(dataset.userTraits) : undefined,
-    theme: dataset.theme,
-    userContext: dataset.userContext ? safeJsonParse(dataset.userContext) : undefined,
-    keyboardShortcut: dataset.keyboardShortcut,
-  };
-}
-
-function safeJsonParse(raw: string): unknown | undefined {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    console.warn("[Kody] invalid JSON in data-* attribute, ignoring");
-    return undefined;
-  }
-}
-
 function readMountConfig(): KodyWidgetConfig | null {
-  // Merge precedence: data-* (lowest) → window.KodyConfig (highest).
-  const fromScript = buildConfigFromScript() ?? {};
-  const fromWindow: Record<string, unknown> = {};
-  if (typeof window !== "undefined" && window.KodyConfig) {
-    Object.assign(fromWindow, window.KodyConfig);
+  // Hand the raw dataset and window.KodyConfig straight to parseEmbedConfig —
+  // it already merges (window wins), parses JSON-encoded data-* values, and
+  // normalises the result. No need to duplicate the merge or the JSON
+  // parsing here.
+  const dataset = (_currentScript?.dataset ?? {}) as Record<string, string | undefined>;
+  const windowConfig = typeof window !== "undefined" ? window.KodyConfig ?? null : null;
+
+  let validated;
+  try {
+    validated = parseEmbedConfig(dataset, windowConfig);
+  } catch (err) {
+    console.error("[Kody] invalid embed config:", (err as Error).message);
+    return null;
   }
 
-  const merged: Record<string, unknown> = { ...fromScript, ...fromWindow };
-  if (!merged.siteId) return null;
-
-  const validated = parseEmbedConfig(
-    (_currentScript?.dataset ?? {}) as Record<string, string | undefined>,
-    merged,
-  );
-
-  const serverUrl = resolveServerUrl({
-    serverUrl: typeof validated.serverUrl === "string" ? validated.serverUrl : undefined,
-  });
+  const serverUrl = resolveServerUrl(validated.serverUrl);
 
   return {
     siteId: validated.siteId,
