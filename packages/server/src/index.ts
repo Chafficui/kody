@@ -17,6 +17,33 @@ if (env.ADMIN_EMAIL && env.ADMIN_PASSWORD) {
   });
 }
 
+// Boot sweep + slow interval to keep the `tool_jobs` table from
+// growing without bound. Terminal jobs (succeeded / failed /
+// timeout) older than 7 days are dropped; pending / running rows
+// are left alone so we don't lose track of a long-running tool.
+const TOOL_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const TOOL_JOB_PRUNE_INTERVAL_MS = 60 * 60 * 1000; // every hour
+{
+  const { ToolJobStore } = await import("./services/tool-job-store.js");
+  const jobStore = new ToolJobStore(db);
+  const prunedAtBoot = jobStore.pruneTerminal(TOOL_JOB_RETENTION_MS);
+  if (prunedAtBoot > 0) {
+    console.log(`[tool-jobs] pruned ${prunedAtBoot} terminal job(s) older than 7d at boot`);
+  }
+  const interval = setInterval(() => {
+    try {
+      const pruned = jobStore.pruneTerminal(TOOL_JOB_RETENTION_MS);
+      if (pruned > 0) {
+        console.log(`[tool-jobs] pruned ${pruned} terminal job(s) older than 7d`);
+      }
+    } catch (err) {
+      console.error("[tool-jobs] retention sweep failed:", err);
+    }
+  }, TOOL_JOB_PRUNE_INTERVAL_MS);
+  // Don't keep the process alive solely for this sweep.
+  interval.unref?.();
+}
+
 const existing = app.siteStore.getSiteConfig("demo");
 if (!existing) {
   try {
