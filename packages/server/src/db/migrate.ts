@@ -147,7 +147,7 @@ const migrations: Migration[] = [
     up: `
       CREATE TABLE IF NOT EXISTS tool_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT NOT NULL UNIQUE,
+        job_id TEXT NOT NULL,
         site_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
         tool_name TEXT NOT NULL,
@@ -163,15 +163,25 @@ const migrations: Migration[] = [
         last_polled_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
-      CREATE INDEX IF NOT EXISTS idx_tool_jobs_job_id ON tool_jobs(job_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_jobs_site_job ON tool_jobs(site_id, job_id);
       CREATE INDEX IF NOT EXISTS idx_tool_jobs_site_session ON tool_jobs(site_id, session_id);
       CREATE INDEX IF NOT EXISTS idx_tool_jobs_status ON tool_jobs(status);
     `,
     down: `
       DROP INDEX IF EXISTS idx_tool_jobs_status;
       DROP INDEX IF EXISTS idx_tool_jobs_site_session;
-      DROP INDEX IF EXISTS idx_tool_jobs_job_id;
+      DROP INDEX IF NOT EXISTS uq_tool_jobs_site_job;
       DROP TABLE IF EXISTS tool_jobs;
+    `,
+  },
+  {
+    version: 10,
+    name: "tool_jobs_retention_index",
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_tool_jobs_completed_at ON tool_jobs(completed_at);
+    `,
+    down: `
+      DROP INDEX IF EXISTS idx_tool_jobs_completed_at;
     `,
   },
 ];

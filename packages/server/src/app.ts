@@ -77,7 +77,14 @@ export function createApp(
   app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
   app.use("/api/sessions", siteAuth, createSessionsRouter(conversationStore));
   app.use("/api/feedback", siteAuth, createFeedbackRouter(deps.db));
-  app.use("/api/tool-jobs", siteAuth, createToolJobsRouter(deps.db));
+  // `/api/tool-jobs/:jobId` is the widget's polling endpoint and
+  // is by design the highest-frequency route in the app. It still
+  // needs to be rate-limited so a misbehaving (or malicious) client
+  // can't drain a service via tight polling loops. The site's
+  // standard `messagesPerMinute` cap is a sensible default here —
+  // adjust `createRateLimitMiddleware` if you need a separate,
+  // larger budget for polling.
+  app.use("/api/tool-jobs", siteAuth, rateLimit, createToolJobsRouter(deps.db));
 
   app.use("/api/admin", createAdminAuthRouter(authService));
 

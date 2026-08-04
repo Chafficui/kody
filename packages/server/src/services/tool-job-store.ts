@@ -88,24 +88,62 @@ export interface ToolJobUpdate {
   touchPolledAt?: boolean;
 }
 
+/**
+ * Hard cap on the externally-supplied `jobId` to keep the
+ * `(site_id, job_id)` unique index small and to bound what the
+ * GET /api/tool-jobs/:jobId route has to look up. Matches the
+ * 128-char limit in the route handler.
+ */
+const MAX_JOB_ID_LENGTH = 128;
+/** Default cap for `list` so admin scripts can pull a bounded page. */
+const DEFAULT_LIST_LIMIT = 200;
+/** Hard cap on `list` so a buggy caller can't dump the whole table. */
+const MAX_LIST_LIMIT = 1000;
+
+/**
+ * Reject job ids that don't look like a reasonable opaque token. We
+ * intentionally allow most printable ASCII (the customer tool
+ * endpoint can return anything from a UUID to a base64 blob) but
+ * keep length bounded and forbid whitespace so the value is safe to
+ * drop into a URL path and a SQLite text column.
+ */
+export function isValidJobId(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_JOB_ID_LENGTH) return false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    // Disallow whitespace and control characters; allow everything else.
+    if (c <= 0x20 || c === 0x7f) return false;
+  }
+  return true;
+}
+
 export class ToolJobStore {
   constructor(private db: Database.Database) {}
 
   create(input: CreateToolJobInput): ToolJob {
-    const jobId = input.jobId ?? randomUUID();
+    let jobId = input.jobId ?? randomUUID();
+    if (input.jobId !== undefined && !isValidJobId(input.jobId)) {
+      throw new Error(`Invalid jobId format: ${input.jobId.slice(0, 32)}…`);
+    }
+    if (jobId.length > MAX_JOB_ID_LENGTH) jobId = jobId.slice(0, MAX_JOB_ID_LENGTH);
     this.db
       .prepare(
         `INSERT INTO tool_jobs (job_id, site_id, session_id, tool_name, endpoint_url, status, poll_url)
          VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
       )
       .run(jobId, input.siteId, input.sessionId, input.toolName, input.endpointUrl, input.pollUrl ?? null);
-    const created = this.get(jobId);
+    const created = this.getForSite(jobId, input.siteId);
     if (!created) {
       throw new Error("tool_jobs row not found immediately after insert");
     }
     return created;
   }
 
+  /**
+   * Look up a job by its external id. Job ids are unique only
+   * within a site, so callers that know the requesting site should
+   * prefer `getForSite` to avoid a cross-site enumeration vector.
+   */
   get(jobId: string): ToolJob | null {
     const row = this.db
       .prepare("SELECT * FROM tool_jobs WHERE job_id = ?")
@@ -113,15 +151,25 @@ export class ToolJobStore {
     return row ? rowToJob(row) : null;
   }
 
-  /** Return the job only when it belongs to the supplied site (auth boundary). */
+  /**
+   * Return the job only when it belongs to the supplied site.
+   * This is the auth-boundary lookup used by every request
+   * handler — the unique index is `(site_id, job_id)`, so
+   * collision across sites is impossible.
+   */
   getForSite(jobId: string, siteId: string): ToolJob | null {
     const row = this.db
-      .prepare("SELECT * FROM tool_jobs WHERE job_id = ? AND site_id = ?")
-      .get(jobId, siteId) as ToolJobRow | undefined;
+      .prepare("SELECT * FROM tool_jobs WHERE site_id = ? AND job_id = ?")
+      .get(siteId, jobId) as ToolJobRow | undefined;
     return row ? rowToJob(row) : null;
   }
 
-  update(jobId: string, patch: ToolJobUpdate): ToolJob | null {
+  /**
+   * Apply a partial update to a job row, scoped by site so cross-
+   * site writes are impossible. Returns the updated row or null
+   * when no such (site, job) exists.
+   */
+  update(jobId: string, patch: ToolJobUpdate, siteId?: string): ToolJob | null {
     const sets: string[] = [];
     const values: Array<string | number | null> = [];
 
@@ -155,13 +203,22 @@ export class ToolJobStore {
     if (patch.touchPolledAt) {
       sets.push("last_polled_at = datetime('now')");
     }
-    if (sets.length === 0) return this.get(jobId);
+    if (sets.length === 0) {
+      return siteId === undefined ? this.get(jobId) : this.getForSite(jobId, siteId);
+    }
 
-    values.push(jobId);
+    if (siteId === undefined) {
+      values.push(jobId);
+      this.db
+        .prepare(`UPDATE tool_jobs SET ${sets.join(", ")} WHERE job_id = ?`)
+        .run(...values);
+      return this.get(jobId);
+    }
+    values.push(siteId, jobId);
     this.db
-      .prepare(`UPDATE tool_jobs SET ${sets.join(", ")} WHERE job_id = ?`)
+      .prepare(`UPDATE tool_jobs SET ${sets.join(", ")} WHERE site_id = ? AND job_id = ?`)
       .run(...values);
-    return this.get(jobId);
+    return this.getForSite(jobId, siteId);
   }
 
   /**
@@ -189,7 +246,19 @@ export class ToolJobStore {
     return result.changes;
   }
 
-  list(opts: { siteId?: string; sessionId?: string; status?: ToolJobStatus } = {}): ToolJob[] {
+  /**
+   * List jobs with optional filters. Always appends a bounded
+   * `LIMIT` (default 200, max 1000) so a buggy caller can't pull
+   * the whole table into memory.
+   */
+  list(
+    opts: {
+      siteId?: string;
+      sessionId?: string;
+      status?: ToolJobStatus;
+      limit?: number;
+    } = {},
+  ): ToolJob[] {
     const where: string[] = [];
     const values: Array<string> = [];
     if (opts.siteId) {
@@ -204,11 +273,36 @@ export class ToolJobStore {
       where.push("status = ?");
       values.push(opts.status);
     }
+    const requested = opts.limit ?? DEFAULT_LIST_LIMIT;
+    const limit = Math.max(1, Math.min(MAX_LIST_LIMIT, Math.floor(requested)));
     const sql =
       "SELECT * FROM tool_jobs" +
       (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
-      " ORDER BY created_at DESC";
-    const rows = this.db.prepare(sql).all(...values) as ToolJobRow[];
+      " ORDER BY created_at DESC LIMIT ?";
+    const rows = this.db.prepare(sql).all(...values, limit) as ToolJobRow[];
     return rows.map(rowToJob);
+  }
+
+  /**
+   * Retention sweep: drop terminal jobs older than `maxAgeMs`.
+   * `terminal` means `succeeded`, `failed`, or `timeout`. Pending /
+   * running rows are left alone so we don't lose track of a
+   * long-running tool.
+   *
+   * Returns the number of rows deleted. Called by the server
+   * bootstrap (rare) and by a slow interval from
+   * `app.ts` so the table doesn't grow without bound.
+   */
+  pruneTerminal(maxAgeMs: number): number {
+    const cutoffSeconds = Math.max(0, Math.floor(maxAgeMs / 1000));
+    const result = this.db
+      .prepare(
+        `DELETE FROM tool_jobs
+         WHERE status IN ('succeeded', 'failed', 'timeout')
+           AND completed_at IS NOT NULL
+           AND (julianday('now') - julianday(completed_at)) * 86400 > ?`,
+      )
+      .run(cutoffSeconds);
+    return result.changes;
   }
 }
