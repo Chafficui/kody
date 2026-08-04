@@ -1,6 +1,6 @@
 import { Router, type Router as RouterType } from "express";
 import type Database from "better-sqlite3";
-import { chatRequestSchema } from "@kody/shared";
+import { chatRequestSchema, type SiteConfig } from "@kody/shared";
 import type { ConversationStore } from "../services/conversation-store.js";
 import { filterInput } from "../services/guardrails/input-filter.js";
 import { buildSystemPrompt } from "../services/guardrails/system-prompt.js";
@@ -146,9 +146,10 @@ function resolveSessionIdForWrite(
   initialSessionId: string,
 ): string {
   // Happy path: the conversation we created at request start is
-  // still in the map. Use the same sessionId.
-  const initial = conversationStore.getMessages(initialSessionId);
-  if (initial !== undefined) {
+  // still in the map. Use the same sessionId. We use `has` (not
+  // `getMessages`) because `getMessages` returns an empty array
+  // for a missing conversation, which would always be truthy.
+  if (conversationStore.has(initialSessionId)) {
     return initialSessionId;
   }
   // Fallback: original conversation expired. Re-derive (or create)
@@ -164,6 +165,11 @@ export function createChatRouter(
   const knowledgeAssembler = createKnowledgeAssembler(urlFetcher);
   const router: RouterType = Router();
   const toolJobStore = db ? new ToolJobStore(db) : undefined;
+  // Hoist a single ResponseCache so cached entries survive across
+  // requests. Constructing it per-request (as the previous
+  // implementation did) meant every request started from an empty
+  // cache and never saw a hit.
+  const responseCache = new ResponseCache({ enabled: false, ttlSeconds: 3600, maxEntries: 1000 });
 
   router.post("/", async (req, res) => {
     const config = req.siteConfig;
@@ -255,24 +261,64 @@ export function createChatRouter(
     // into a dead socket and burns tokens / cycles until the AI call
     // naturally finishes.
     const abortController = new AbortController();
+    // `closed` flips the moment the request is closed (either by the
+    // client or by the server). The SSE writers consult it so we
+    // never call `res.write` on a destroyed socket — that throws
+    // and would either crash the route or be swallowed silently,
+    // depending on the platform.
+    let closed = false;
     const onReqClose = () => {
       if (!abortController.signal.aborted) {
         abortController.abort();
       }
+      closed = true;
     };
+    // We listen on both `req` and `req.socket`. The IncomingMessage
+    // `close` event is only emitted after the response is also
+    // fully written — which would deadlock us here because the SSE
+    // stream is still mid-flight. The underlying socket's `close`
+    // event fires the moment the TCP connection terminates,
+    // regardless of where the response is in its lifecycle, so it
+    // is the reliable trigger for tearing down the in-flight AI
+    // stream and any pending async-tool polls.
     req.on("close", onReqClose);
+    req.on("aborted", onReqClose);
+    req.socket?.on("close", onReqClose);
 
-    let closed = false;
-    const safeWrite = (chunk: string): void => {
-      if (closed) return;
+    const safeWrite = (chunk: string): boolean => {
+      if (closed) return false;
+      if (abortController.signal.aborted) {
+        closed = true;
+        return false;
+      }
+      if (res.writableEnded || res.destroyed) {
+        closed = true;
+        return false;
+      }
       try {
-        res.write(chunk);
+        const ok = res.write(chunk);
+        // Honor backpressure: a `false` return from `write` means
+        // the internal buffer is full. Don't let a single slow
+        // client queue unbounded SSE deltas — set `closed` so the
+        // next call skips, and abort the AI stream so the route
+        // tears down promptly.
+        if (ok === false) {
+          closed = true;
+          if (!abortController.signal.aborted) abortController.abort();
+          return false;
+        }
+        return true;
       } catch {
         closed = true;
+        if (!abortController.signal.aborted) abortController.abort();
+        return false;
       }
     };
     const safeEnd = (): void => {
-      if (closed) return;
+      if (closed || res.writableEnded || res.destroyed) {
+        closed = true;
+        return;
+      }
       closed = true;
       try {
         res.end();
@@ -304,6 +350,9 @@ export function createChatRouter(
         tools,
         signal: abortController.signal,
         toolJobStore,
+        // Thread the visitor's sessionId through so async tool
+        // rows are queryable by session (not just by site).
+        sessionId: initialSessionId,
         callbacks: {
           onToken: (token) => agentFilter.processToken(token),
           onDone: () => agentFilter.flush(),
@@ -402,25 +451,43 @@ export function createChatRouter(
 
       // Opt-in response cache: only used for plain text turns (no
       // tool calls in the conversation) so we never replay a stale
-      // tool-using reply.
-      const cache = new ResponseCache(config.cache);
+      // tool-using reply. The shared `responseCache` instance lives
+      // at router scope so a hit from a previous request is
+      // available to this one.
       const lastUserMessage = message;
+      const cacheKeyInput = {
+        siteId: config.siteId,
+        model: config.ai.model,
+        temperature: config.ai.temperature,
+        lastUserMessage,
+        last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+      };
       const cacheHit =
-        cache.isEnabled() && isCacheable(messages)
-          ? cache.get({
-              siteId: config.siteId,
-              model: config.ai.model,
-              temperature: config.ai.temperature,
-              lastUserMessage,
-              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
-            })
+        responseCache.isEnabled(config.cache) && isCacheable(messages)
+          ? responseCache.get(cacheKeyInput, config.cache)
           : null;
 
       if (cacheHit) {
-        safeWrite(
-          `data: ${JSON.stringify({ type: "cache_hit", contentLength: cacheHit.content.length })}\n\n`,
-        );
-        agentFilterLikeReplay(safeWrite, cacheHit.content);
+        // Scrub the cached reply with the same pipeline that runs
+        // over live deltas. We *also* store only the scrubbed
+        // content (see below) so subsequent hits cannot replay raw
+        // blocked output, but running the scrubber here protects
+        // us against the case where a config change starts
+        // blocking content that was previously allowed.
+        const scrubbedHit = scrubOutput(cacheHit.content, scrubberConfig);
+        if (scrubbedHit.blocked) {
+          // Don't replay blocked content over SSE — surface the
+          // refusal message in the same shape a live stream would.
+          safeWrite(
+            `data: ${JSON.stringify({ type: "cache_hit", contentLength: config.guardrails.refusalMessage.length })}\n\n`,
+          );
+          replayContentAsDeltas(safeWrite, config.guardrails.refusalMessage);
+        } else {
+          safeWrite(
+            `data: ${JSON.stringify({ type: "cache_hit", contentLength: scrubbedHit.content.length })}\n\n`,
+          );
+          replayContentAsDeltas(safeWrite, scrubbedHit.content);
+        }
 
         const suggestions = generateTopicSuggestions(
           config.guardrails.allowedTopics,
@@ -433,7 +500,6 @@ export function createChatRouter(
         safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
         safeEnd();
 
-        const scrubbed = scrubOutput(cacheHit.content, scrubberConfig);
         const writeSessionId = resolveSessionIdForWrite(
           conversationStore,
           config.siteId,
@@ -442,7 +508,7 @@ export function createChatRouter(
         );
         conversationStore.addMessage(writeSessionId, {
           role: "assistant",
-          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+          content: scrubbedHit.blocked ? config.guardrails.refusalMessage : scrubbedHit.content,
         });
         req.off("close", onReqClose);
         return;
@@ -510,18 +576,17 @@ export function createChatRouter(
         safeEnd();
 
         // Cache the assistant's reply for next time, but only for
-        // turns that are safe to replay (no tool calls, etc.).
+        // turns that are safe to replay (no tool calls, etc.). We
+        // store the *scrubbed* reply so a future hit can't replay
+        // raw blocked output — the live stream has already passed
+        // the reply through `scrubOutput` for storage; the cache
+        // mirrors that policy.
         if (contentToStore && isCacheable(messages)) {
-          cache.set(
-            {
-              siteId: config.siteId,
-              model: config.ai.model,
-              temperature: config.ai.temperature,
-              lastUserMessage,
-              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
-            },
-            contentToStore,
-          );
+          const scrubbedForCache = scrubOutput(contentToStore, scrubberConfig);
+          const toCache = scrubbedForCache.blocked
+            ? config.guardrails.refusalMessage
+            : scrubbedForCache.content;
+          responseCache.set(cacheKeyInput, config.cache, toCache);
         }
 
         if (contentToStore) {
@@ -540,24 +605,32 @@ export function createChatRouter(
       }
     } else {
       // Plain (no-tools, no-rag) path: same caching as the RAG path.
-      const cache = new ResponseCache(config.cache);
       const lastUserMessage = message;
+      const cacheKeyInput = {
+        siteId: config.siteId,
+        model: config.ai.model,
+        temperature: config.ai.temperature,
+        lastUserMessage,
+        last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+      };
       const cacheHit =
-        cache.isEnabled() && isCacheable(messages)
-          ? cache.get({
-              siteId: config.siteId,
-              model: config.ai.model,
-              temperature: config.ai.temperature,
-              lastUserMessage,
-              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
-            })
+        responseCache.isEnabled(config.cache) && isCacheable(messages)
+          ? responseCache.get(cacheKeyInput, config.cache)
           : null;
 
       if (cacheHit) {
-        safeWrite(
-          `data: ${JSON.stringify({ type: "cache_hit", contentLength: cacheHit.content.length })}\n\n`,
-        );
-        agentFilterLikeReplay(safeWrite, cacheHit.content);
+        const scrubbedHit = scrubOutput(cacheHit.content, scrubberConfig);
+        if (scrubbedHit.blocked) {
+          safeWrite(
+            `data: ${JSON.stringify({ type: "cache_hit", contentLength: config.guardrails.refusalMessage.length })}\n\n`,
+          );
+          replayContentAsDeltas(safeWrite, config.guardrails.refusalMessage);
+        } else {
+          safeWrite(
+            `data: ${JSON.stringify({ type: "cache_hit", contentLength: scrubbedHit.content.length })}\n\n`,
+          );
+          replayContentAsDeltas(safeWrite, scrubbedHit.content);
+        }
 
         const suggestions = generateTopicSuggestions(
           config.guardrails.allowedTopics,
@@ -570,7 +643,6 @@ export function createChatRouter(
         safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
         safeEnd();
 
-        const scrubbed = scrubOutput(cacheHit.content, scrubberConfig);
         const writeSessionId = resolveSessionIdForWrite(
           conversationStore,
           config.siteId,
@@ -579,7 +651,7 @@ export function createChatRouter(
         );
         conversationStore.addMessage(writeSessionId, {
           role: "assistant",
-          content: scrubbed.blocked ? config.guardrails.refusalMessage : scrubbed.content,
+          content: scrubbedHit.blocked ? config.guardrails.refusalMessage : scrubbedHit.content,
         });
         req.off("close", onReqClose);
         return;
@@ -647,16 +719,11 @@ export function createChatRouter(
         safeEnd();
 
         if (contentToStore && isCacheable(messages)) {
-          cache.set(
-            {
-              siteId: config.siteId,
-              model: config.ai.model,
-              temperature: config.ai.temperature,
-              lastUserMessage,
-              last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
-            },
-            contentToStore,
-          );
+          const scrubbedForCache = scrubOutput(contentToStore, scrubberConfig);
+          const toCache = scrubbedForCache.blocked
+            ? config.guardrails.refusalMessage
+            : scrubbedForCache.content;
+          responseCache.set(cacheKeyInput, config.cache, toCache);
         }
 
         if (contentToStore) {
@@ -680,13 +747,14 @@ export function createChatRouter(
 }
 
 /**
- * Replay a cached assistant reply as a sequence of `delta` SSE
- * events followed by `done`. We split the content into small chunks
- * (mirroring the way the AI provider would normally emit tokens) so
- * the widget renders the replayed text the same way as a live
- * stream.
+ * Replay an already-cleaned assistant reply as a sequence of
+ * `delta` SSE events. We split the content into small chunks
+ * (mirroring the way the AI provider would normally emit tokens)
+ * so the widget renders the replayed text the same way as a live
+ * stream. The caller is responsible for emitting the trailing
+ * `done` / `suggestions` events.
  */
-function agentFilterLikeReplay(write: (chunk: string) => void, content: string): void {
+function replayContentAsDeltas(write: (chunk: string) => boolean, content: string): void {
   const chunkSize = 32;
   for (let i = 0; i < content.length; i += chunkSize) {
     const slice = content.slice(i, i + chunkSize);

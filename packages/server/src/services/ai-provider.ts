@@ -88,17 +88,48 @@ export const DEFAULT_RETRY: Required<RetryOptions> = {
   maxDelayMs: 2000,
 };
 
+/** Hard caps so a misconfigured `ai.retry` block can't make the
+ * server stall forever or fail instantly. */
+const RETRY_LIMITS = {
+  maxAttempts: { min: 1, max: 10 },
+  baseDelayMs: { min: 0, max: 10_000 },
+  maxDelayMs: { min: 0, max: 60_000 },
+} as const;
+
 /**
- * Merge a per-call `RetryOptions` with the site-level config. Always
- * caps `maxAttempts` at 1 to disable retries if the caller asks.
+ * Resolve the site-level retry configuration. `AiProviderConfig.retry`
+ * is optional and merges into `DEFAULT_RETRY`. We also clamp every
+ * field to its allowed range so a misconfigured site (e.g.
+ * `maxDelayMs: 999999`) can't hang the request for a literal
+ * fifteen-minute backoff window. `baseDelayMs` and `maxDelayMs`
+ * are additionally reconciled so `maxDelayMs >= baseDelayMs`.
  */
 function resolveRetry(config: AiProviderConfig): Required<RetryOptions> {
   const r = config.retry ?? {};
+  const baseDelayMs = clampNumber(
+    r.baseDelayMs ?? DEFAULT_RETRY.baseDelayMs,
+    RETRY_LIMITS.baseDelayMs,
+  );
+  const maxDelayMsRaw = clampNumber(
+    r.maxDelayMs ?? DEFAULT_RETRY.maxDelayMs,
+    RETRY_LIMITS.maxDelayMs,
+  );
   return {
-    maxAttempts: Math.max(1, r.maxAttempts ?? DEFAULT_RETRY.maxAttempts),
-    baseDelayMs: r.baseDelayMs ?? DEFAULT_RETRY.baseDelayMs,
-    maxDelayMs: r.maxDelayMs ?? DEFAULT_RETRY.maxDelayMs,
+    maxAttempts: clampNumber(
+      r.maxAttempts ?? DEFAULT_RETRY.maxAttempts,
+      RETRY_LIMITS.maxAttempts,
+    ),
+    baseDelayMs,
+    maxDelayMs: Math.max(maxDelayMsRaw, baseDelayMs),
   };
+}
+
+function clampNumber(
+  value: number,
+  bounds: { min: number; max: number },
+): number {
+  if (!Number.isFinite(value)) return bounds.min;
+  return Math.max(bounds.min, Math.min(bounds.max, Math.floor(value)));
 }
 
 const MAX_CONSECUTIVE_BAD_CHUNKS = 25;
@@ -113,9 +144,6 @@ export async function streamChatCompletion(
   const body = buildRequestBody(config, messages, options?.tools);
 
   let attempt = 0;
-  let lastStatus = 0;
-  let lastError = "";
-  let consecutiveBad = 0;
 
   // Try up to `retry.maxAttempts` times. Each attempt either streams
   // to completion, returns a client error (no retry), or surfaces a
@@ -123,6 +151,14 @@ export async function streamChatCompletion(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     attempt++;
+    // Per-attempt state. `consecutiveBad` is reset for each
+    // attempt so a string of malformed chunks in attempt 1
+    // doesn't bias the desync counter for attempt 2. `delivered`
+    // and `fullContent` are reset so a mid-stream retry doesn't
+    // replay already-delivered tokens to the caller.
+    let consecutiveBad = 0;
+    let delivered = 0;
+
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     if (options?.signal) {
@@ -144,7 +180,6 @@ export async function streamChatCompletion(
     } catch (err) {
       options?.signal?.removeEventListener("abort", onAbort);
       const message = err instanceof Error ? err.message : "Failed to connect to AI provider";
-      lastError = message;
       if (attempt < retry.maxAttempts && !isAbortError(err)) {
         const delay = computeBackoff(attempt, retry);
         callbacks.onRetry?.({ attempt, delayMs: delay, reason: `network: ${message}` });
@@ -158,12 +193,11 @@ export async function streamChatCompletion(
     if (!response.ok) {
       options?.signal?.removeEventListener("abort", onAbort);
       const status = response.status;
-      lastStatus = status;
       const text = await response.text().catch(() => "Unknown error");
-      lastError = `AI provider returned ${status}: ${text.slice(0, 500)}`;
+      const errMsg = `AI provider returned ${status}: ${text.slice(0, 500)}`;
 
       if (!isRetriableStatus(status) || attempt >= retry.maxAttempts) {
-        callbacks.onError(lastError);
+        callbacks.onError(errMsg);
         return { content: "", toolCalls: [], finishReason: "error" };
       }
       const retryAfter = parseRetryAfter(response.headers.get("Retry-After"), computeBackoff(attempt, retry));
@@ -191,6 +225,13 @@ export async function streamChatCompletion(
     let finishReason = "stop";
     const toolCallAccumulator = new Map<number, { id: string; name: string; arguments: string }>();
     let streamError: string | null = null;
+    // Tracks whether the previous attempt's stream had already
+    // emitted at least one token. The retry decision below uses
+    // this so a *partial* mid-stream failure is *not* retried
+    // (replay would duplicate already-delivered tokens); the
+    // caller gets the partial result and `onError` is invoked
+    // synchronously.
+    let emittedAnyToken = false;
 
     try {
       while (true) {
@@ -238,6 +279,8 @@ export async function streamChatCompletion(
 
           if (delta?.content) {
             fullContent += delta.content;
+            delivered += delta.content.length;
+            if (!emittedAnyToken && delivered > 0) emittedAnyToken = true;
             callbacks.onToken(delta.content);
           }
 
@@ -284,29 +327,28 @@ export async function streamChatCompletion(
     }
 
     if (streamError) {
-      // Decide: retry the whole stream or fail. Network mid-stream failures
-      // are retriable; the desync guard is not (it indicates a broken
-      // provider, not a flaky network).
+      // Decide: retry the whole stream or fail. A *pre-token*
+      // failure is retried (the caller hasn't seen any output
+      // yet, so replaying from scratch is safe). A *post-token*
+      // failure surfaces immediately via onError — we can't
+      // replay without duplicating tokens we've already shipped.
+      // The desync guard is never retried regardless, since it
+      // indicates a broken provider, not a flaky network.
       const isDesync = streamError.startsWith("AI stream desync");
-      if (!isDesync && attempt < retry.maxAttempts) {
-        lastError = streamError;
+      if (!isDesync && !emittedAnyToken && attempt < retry.maxAttempts) {
         const delay = computeBackoff(attempt, retry);
         callbacks.onRetry?.({ attempt, delayMs: delay, reason: `stream: ${streamError}` });
         await sleep(delay, options?.signal);
         continue;
       }
       callbacks.onError(streamError);
-      return { content: "", toolCalls: [], finishReason: "error" };
+      return { content: fullContent, toolCalls: [], finishReason: "error" };
     }
 
     const toolCalls = buildToolCalls(toolCallAccumulator);
     callbacks.onDone();
     return { content: fullContent, toolCalls, finishReason };
   }
-
-  // Unreachable; the loop either returns or continues.
-  callbacks.onError(lastError || `AI provider failed (last status ${lastStatus})`);
-  return { content: "", toolCalls: [], finishReason: "error" };
 }
 
 function buildHeaders(config: AiProviderConfig): Record<string, string> {

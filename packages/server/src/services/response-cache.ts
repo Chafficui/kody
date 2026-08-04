@@ -22,83 +22,120 @@ export interface CacheKeyInput {
 }
 
 interface InternalEntry {
-  key: string;
   content: string;
   createdAt: number;
 }
 
 /**
- * Bounded LRU response cache, scoped per site.
+ * One node in the global LRU list. The list is doubly-linked so
+ * eviction and recency updates are O(1) without needing a separate
+ * `createdAt` sort. `next === null` means "the tail of the list".
+ */
+interface LruNode {
+  siteId: string;
+  key: string;
+  prev: LruNode | null;
+  next: LruNode | null;
+}
+
+/**
+ * Bounded LRU response cache.
  *
  * Keys are derived from a hash of the request shape (see `buildKey`)
- * so we don't keep the original prompt in memory. Each site has its
- * own LRU ring so a chatty site can't evict entries from a quiet one.
+ * so we don't keep the original prompt in memory. Entries are stored
+ * in a single global pool with a hard cap (`config.maxEntries`),
+ * which is fairer than a per-site cap when a chatty site could
+ * otherwise evict entries from a quiet one — and it's also what
+ * `maxEntries` advertises.
  *
  * Behaviour:
- *   - `get` refreshes recency (deletes + re-inserts to the end of the Map)
- *   - `set` evicts the oldest entry when `maxEntries` is exceeded
+ *   - `get` refreshes recency by moving the node to the head of the LRU list
+ *   - `set` evicts the oldest entries when the global cap is exceeded
  *   - Entries older than `ttlSeconds` are treated as misses and purged
+ *   - Site rings are dropped when they become empty so inactive
+ *     sites don't keep their ring resident
  */
 export class ResponseCache {
-  private sites = new Map<string, Map<string, InternalEntry>>();
-
-  constructor(private config: ResponseCacheConfig) {}
+  private rings = new Map<string, Map<string, InternalEntry>>();
+  private head: LruNode | null = null;
+  private tail: LruNode | null = null;
+  private nodes = new Map<string, LruNode>();
+  private totalEntries = 0;
 
   /**
-   * Returns true if the cache is enabled. The default in the schema is
-   * `enabled: false`, so this is opt-in.
+   * Storage-level config (TTL, capacity). The per-site
+   * `enabled` flag is *not* part of this — callers pass the
+   * current site's `config.cache` into `isEnabled` / `get` /
+   * `set` so a single shared instance can serve many sites,
+   * some with caching on and some off.
    */
-  isEnabled(): boolean {
-    return this.config.enabled === true;
+  constructor(private storageConfig: ResponseCacheConfig) {}
+
+  /**
+   * Returns true if the cache is enabled for the supplied site
+   * config. The default in the schema is `enabled: false`, so this
+   * is opt-in per site.
+   */
+  isEnabled(config: ResponseCacheConfig): boolean {
+    return config.enabled === true;
   }
 
   /**
    * Look up an entry. Returns null on miss, expired entry, or when the
-   * cache is disabled. On a hit, recency is refreshed.
+   * cache is disabled for the supplied site. On a hit, recency is
+   * refreshed.
    */
-  get(input: CacheKeyInput): CacheEntry | null {
-    if (!this.isEnabled()) return null;
+  get(input: CacheKeyInput, config: ResponseCacheConfig): CacheEntry | null {
+    if (!this.isEnabled(config)) return null;
 
-    const ring = this.sites.get(input.siteId);
+    const ring = this.rings.get(input.siteId);
     if (!ring) return null;
 
     const key = buildKey(input);
     const entry = ring.get(key);
-    if (!entry) return null;
-
-    const ttlMs = (this.config.ttlSeconds ?? 3600) * 1000;
-    if (Date.now() - entry.createdAt > ttlMs) {
-      ring.delete(key);
-      if (ring.size === 0) this.sites.delete(input.siteId);
+    if (!entry) {
+      // The LRU list may have a stale node if the row was removed
+      // from the ring; the next set() will reconcile.
       return null;
     }
 
-    // Refresh recency by re-inserting at the end of the Map.
-    ring.delete(key);
-    ring.set(key, entry);
+    const ttlSeconds = config.ttlSeconds ?? this.storageConfig.ttlSeconds ?? 3600;
+    const ttlMs = ttlSeconds * 1000;
+    if (Date.now() - entry.createdAt > ttlMs) {
+      this.removeNode(input.siteId, key);
+      return null;
+    }
+
+    this.touchNode(input.siteId, key);
     return { content: entry.content, createdAt: entry.createdAt };
   }
 
   /**
-   * Store an entry. No-op when the cache is disabled.
+   * Store an entry. No-op when the cache is disabled for the
+   * supplied site.
    */
-  set(input: CacheKeyInput, content: string): void {
-    if (!this.isEnabled()) return;
+  set(input: CacheKeyInput, config: ResponseCacheConfig, content: string): void {
+    if (!this.isEnabled(config)) return;
 
-    let ring = this.sites.get(input.siteId);
+    let ring = this.rings.get(input.siteId);
     if (!ring) {
       ring = new Map();
-      this.sites.set(input.siteId, ring);
+      this.rings.set(input.siteId, ring);
     }
 
     const key = buildKey(input);
-    ring.set(key, {
-      key,
-      content,
-      createdAt: Date.now(),
-    });
+    if (ring.has(key)) {
+      // Update in place — no need to touch the LRU list size.
+      ring.set(key, { content, createdAt: Date.now() });
+      this.touchNode(input.siteId, key);
+      return;
+    }
 
-    this.evictIfOverCapacity(ring);
+    ring.set(key, { content, createdAt: Date.now() });
+    this.totalEntries++;
+    this.attachNode(input.siteId, key);
+
+    this.evictIfOverCapacity();
   }
 
   /**
@@ -106,26 +143,94 @@ export class ResponseCache {
    */
   clear(siteId?: string): void {
     if (siteId === undefined) {
-      this.sites.clear();
-    } else {
-      this.sites.delete(siteId);
+      this.rings.clear();
+      this.head = null;
+      this.tail = null;
+      this.nodes.clear();
+      this.totalEntries = 0;
+      return;
     }
+    const ring = this.rings.get(siteId);
+    if (!ring) return;
+    for (const key of ring.keys()) {
+      this.unlinkNode(siteId, key);
+    }
+    this.rings.delete(siteId);
   }
 
   /**
    * For observability and tests: current entry count for a site.
    */
   size(siteId: string): number {
-    return this.sites.get(siteId)?.size ?? 0;
+    return this.rings.get(siteId)?.size ?? 0;
   }
 
-  private evictIfOverCapacity(ring: Map<string, InternalEntry>): void {
-    const max = this.config.maxEntries ?? 1000;
-    while (ring.size > max) {
-      const oldestKey = ring.keys().next().value;
-      if (oldestKey === undefined) break;
-      ring.delete(oldestKey);
+  /** For observability and tests: total entries across all sites. */
+  totalSize(): number {
+    return this.totalEntries;
+  }
+
+  private evictIfOverCapacity(): void {
+    const max = this.storageConfig.maxEntries ?? 1000;
+    while (this.totalEntries > max && this.tail) {
+      const victim = this.tail;
+      this.unlinkNode(victim.siteId, victim.key);
+      const ring = this.rings.get(victim.siteId);
+      ring?.delete(victim.key);
+      if (ring && ring.size === 0) this.rings.delete(victim.siteId);
     }
+  }
+
+  private touchNode(siteId: string, key: string): void {
+    const node = this.nodes.get(`${siteId}\u0000${key}`);
+    if (!node) {
+      this.attachNode(siteId, key);
+      return;
+    }
+    if (node === this.head) return;
+    this.detach(node);
+    node.prev = null;
+    node.next = this.head;
+    if (this.head) this.head.prev = node;
+    this.head = node;
+    if (!this.tail) this.tail = node;
+  }
+
+  private attachNode(siteId: string, key: string): void {
+    const id = `${siteId}\u0000${key}`;
+    if (this.nodes.has(id)) return;
+    const node: LruNode = { siteId, key, prev: null, next: this.head };
+    if (this.head) this.head.prev = node;
+    this.head = node;
+    if (!this.tail) this.tail = node;
+    this.nodes.set(id, node);
+  }
+
+  private detach(node: LruNode): void {
+    if (node.prev) node.prev.next = node.next;
+    else this.head = node.next;
+    if (node.next) node.next.prev = node.prev;
+    else this.tail = node.prev;
+    node.prev = null;
+    node.next = null;
+  }
+
+  private unlinkNode(siteId: string, key: string): void {
+    const id = `${siteId}\u0000${key}`;
+    const node = this.nodes.get(id);
+    if (!node) return;
+    this.detach(node);
+    this.nodes.delete(id);
+    this.totalEntries = Math.max(0, this.totalEntries - 1);
+  }
+
+  private removeNode(siteId: string, key: string): void {
+    const ring = this.rings.get(siteId);
+    if (ring) {
+      ring.delete(key);
+      if (ring.size === 0) this.rings.delete(siteId);
+    }
+    this.unlinkNode(siteId, key);
   }
 }
 

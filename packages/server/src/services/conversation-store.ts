@@ -60,6 +60,19 @@ export class ConversationStore {
     }
   }
 
+  /**
+   * Returns true if a conversation exists for the supplied sessionId.
+   * Used by the chat route to distinguish "expired conversation"
+   * (re-derive a new one) from "still-alive conversation that just
+   * happens to be empty" (use the original sessionId). Note that
+   * `getMessages` returns an empty array for a missing session, so
+   * the previous `getMessages(...).length > 0` guard could not
+   * distinguish those two cases.
+   */
+  has(sessionId: string): boolean {
+    return this.conversations.has(sessionId);
+  }
+
   getMessages(sessionId: string): ChatMessage[] {
     return this.conversations.get(sessionId)?.messages ?? [];
   }
