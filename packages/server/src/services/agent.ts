@@ -1,7 +1,7 @@
 import type { SiteConfig } from "@kody/shared";
 import { streamChatCompletion, type ToolDefinition } from "./ai-provider.js";
 import type { ToolExecutor } from "./tools/executor.js";
-import type { ToolJobStore, ToolJobStatus } from "./tool-job-store.js";
+import { type ToolJobStore, type ToolJobStatus } from "./tool-job-store.js";
 import { scrubOutput } from "./guardrails/output-scrubber.js";
 
 export interface AgentCallbacks {
@@ -86,14 +86,38 @@ export async function runAgent(options: {
   };
   signal?: AbortSignal;
   toolJobStore?: ToolJobStore;
+  /**
+   * Session id of the visitor whose turn we're running. Threaded
+   * through to the tool_jobs row so the GET /api/tool-jobs/:jobId
+   * endpoint can scope by session, not just by site.
+   */
+  sessionId?: string;
 }): Promise<AgentResult> {
-  const { config, messages, toolExecutor, tools, callbacks, scrubberConfig, signal, toolJobStore } =
-    options;
+  const {
+    config,
+    messages,
+    toolExecutor,
+    tools,
+    callbacks,
+    scrubberConfig,
+    signal,
+    toolJobStore,
+    sessionId,
+  } = options;
   const maxCalls = config.tools.maxToolCalls;
   let totalToolCalls = 0;
   let fullContent = "";
 
   const workingMessages = [...messages];
+  // Shared per-turn deadline for ALL async tool polls. The previous
+  // implementation let each tool call use the full asyncMaxWaitMs
+  // independently, which could blow the user's patience when the
+  // agent decided to chain several async tools in one turn. The
+  // individual `customTool.endpoint.asyncPollIntervalMs` controls
+  // poll frequency; this controls total wall-clock for async work.
+  const turnStart = Date.now();
+  const asyncBudgetMs = config.tools.asyncMaxWaitMs ?? 30_000;
+  const turnDeadline = turnStart + asyncBudgetMs;
 
   while (totalToolCalls <= maxCalls) {
     const result = await streamChatCompletion(
@@ -145,32 +169,20 @@ export async function runAgent(options: {
       totalToolCalls++;
       if (totalToolCalls > maxCalls) break;
 
-      const execResult = await toolExecutor.execute(toolCall, config);
+      const execResult = await toolExecutor.execute(toolCall, config, { sessionId });
       callbacks.onToolStart(execResult.name, execResult.displayText);
 
-      // Backfill the sessionId for the freshly-created tool_job row
-      // (the executor doesn't know it). We only do this for async
-      // results so the row is queryable by session.
-      if (execResult.async && toolJobStore) {
-        const row = toolJobStore.get(execResult.async.jobId);
-        if (row && row.sessionId === "pending") {
-          toolJobStore.update(row.jobId, { touchPolledAt: true });
-          // We don't have a sessionId in the agent options either —
-          // the row keeps the "pending" sentinel and is updated when
-          // the chat route persists the session id. For now we just
-          // touch the polled_at timestamp.
-        }
-      }
-
       // Async branch: poll the endpoint's poll URL until the job
-      // reaches a terminal state, the per-call deadline expires, or
+      // reaches a terminal state, the per-turn deadline expires, or
       // the user aborts.
       let finalResult = execResult.result;
       if (execResult.async) {
         if (toolJobStore) {
-          toolJobStore.update(execResult.async.jobId, {
-            status: execResult.async.initialStatus,
-          });
+          toolJobStore.update(
+            execResult.async.jobId,
+            { status: execResult.async.initialStatus },
+            config.siteId,
+          );
         }
         const polled = await pollAsyncTool({
           toolName: execResult.name,
@@ -179,16 +191,24 @@ export async function runAgent(options: {
           config,
           callbacks,
           signal,
+          // Cap the per-call wait by both the per-call default
+          // and the time left in the turn. This is what keeps a
+          // chain of async tools from blowing the user's patience.
+          deadlineMs: Math.max(0, turnDeadline - Date.now()),
         });
         finalResult = polled.result;
         // After polling completes, ensure the persisted row reflects
         // the final state.
         if (toolJobStore) {
-          toolJobStore.update(execResult.async.jobId, {
-            status: polled.status,
-            result: polled.status === "succeeded" ? polled.result : null,
-            errorMessage: polled.status !== "succeeded" ? polled.result : null,
-          });
+          toolJobStore.update(
+            execResult.async.jobId,
+            {
+              status: polled.status,
+              result: polled.status === "succeeded" ? polled.result : null,
+              errorMessage: polled.status !== "succeeded" ? polled.result : null,
+            },
+            config.siteId,
+          );
         }
       }
 
@@ -220,9 +240,16 @@ async function pollAsyncTool(opts: {
   config: SiteConfig;
   callbacks: AgentCallbacks;
   signal?: AbortSignal;
+  /**
+   * Wall-clock cap for this particular poll. The agent passes the
+   * remaining per-turn budget so several async tools in one turn
+   * share the budget rather than each spending the full cap.
+   */
+  deadlineMs?: number;
 }): Promise<PollOutcome> {
   const { toolName, asyncInfo, toolJobStore, config, callbacks, signal } = opts;
-  const deadline = Date.now() + (config.tools.asyncMaxWaitMs ?? 30_000);
+  const perCallBudget = opts.deadlineMs ?? config.tools.asyncMaxWaitMs ?? 30_000;
+  const deadline = Date.now() + perCallBudget;
   // The executor stored a row with `endpoint.asyncPollIntervalMs` (or
   // the customTool default), but since the agent doesn't see that
   // directly we re-read from the tool definition.
@@ -234,6 +261,11 @@ async function pollAsyncTool(opts: {
   let lastProgress: number | null = null;
   let lastError: string | null = null;
   let lastResult: string | null = null;
+  // Tracks the most recent *successful* terminal status. If we hit
+  // a network error after a terminal status arrived (e.g. a flaky
+  // poll) we shouldn't clobber the success with a stale
+  // errorMessage.
+  let terminalReached = false;
 
   // Initial progress emit so the UI flips to "in progress" immediately
   callbacks.onToolProgress?.({
@@ -258,7 +290,7 @@ async function pollAsyncTool(opts: {
     if (Date.now() >= deadline) {
       return {
         status: "timeout",
-        result: `Async tool "${toolName}" did not complete within ${config.tools.asyncMaxWaitMs}ms (last status: ${lastStatus}).`,
+        result: `Async tool "${toolName}" did not complete within ${perCallBudget}ms (last status: ${lastStatus}).`,
       };
     }
 
@@ -279,7 +311,8 @@ async function pollAsyncTool(opts: {
       }
       // Treat transient poll errors as "still running" — the agent
       // shouldn't fail the whole conversation just because a poll
-      // hiccupped. Continue until the deadline.
+      // hiccupped. We also clear `lastError` on success later so
+      // a stale error doesn't leak into the persisted `errorMessage`.
       lastError = err instanceof Error ? err.message : "Poll error";
       continue;
     }
@@ -293,19 +326,35 @@ async function pollAsyncTool(opts: {
       continue;
     }
 
-    lastStatus = normalizePollStatus(payload.status);
+    const newStatus = normalizePollStatus(payload.status);
     if (typeof payload.progress === "number") lastProgress = payload.progress;
     if (typeof payload.result === "string") lastResult = payload.result;
-    if (typeof payload.error === "string") lastError = payload.error;
+    const newError = typeof payload.error === "string" ? payload.error : null;
+    lastStatus = newStatus;
+    lastError = newError;
+    if (isTerminal(newStatus)) {
+      terminalReached = true;
+    }
+
+    // Compute the error to persist. We clear `errorMessage` on a
+    // successful (non-terminal) poll so a transient fetch error
+    // from the previous iteration doesn't leak into the row, and
+    // we keep whatever the latest payload said on a terminal
+    // status (which is what the row should report).
+    const persistError = isTerminal(newStatus) ? newError : null;
 
     if (toolJobStore) {
-      toolJobStore.update(asyncInfo.jobId, {
-        status: lastStatus,
-        progress: lastProgress,
-        result: lastResult ?? undefined,
-        errorMessage: lastError ?? undefined,
-        touchPolledAt: true,
-      });
+      toolJobStore.update(
+        asyncInfo.jobId,
+        {
+          status: lastStatus,
+          progress: lastProgress,
+          result: lastResult ?? undefined,
+          errorMessage: persistError ?? undefined,
+          touchPolledAt: true,
+        },
+        config.siteId,
+      );
     }
 
     callbacks.onToolProgress?.({

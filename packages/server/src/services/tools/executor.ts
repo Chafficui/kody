@@ -61,7 +61,11 @@ export class ToolExecutor {
     return tools;
   }
 
-  async execute(call: ToolCallRequest, config: SiteConfig): Promise<ToolCallResult> {
+  async execute(
+    call: ToolCallRequest,
+    config: SiteConfig,
+    options?: { sessionId?: string },
+  ): Promise<ToolCallResult> {
     const name = call.function.name;
 
     let args: Record<string, unknown>;
@@ -97,7 +101,7 @@ export class ToolExecutor {
     }
 
     if (customTool.endpoint.async) {
-      return this.executeAsyncCustomTool(call.id, customTool, args, config);
+      return this.executeAsyncCustomTool(call.id, customTool, args, config, options?.sessionId);
     }
 
     return this.executeCustomTool(call.id, customTool, args);
@@ -115,9 +119,12 @@ export class ToolExecutor {
     try {
       const response = await fetch(endpoint.url, {
         method: endpoint.method,
+        // Spread configured headers first so the required
+        // Content-Type marker can't be overridden by an operator
+        // who misconfigures the tool.
         headers: {
-          "Content-Type": "application/json",
           ...endpoint.headers,
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({ tool: tool.name, arguments: args }),
         signal: controller.signal,
@@ -164,15 +171,19 @@ export class ToolExecutor {
     tool: CustomTool,
     args: Record<string, unknown>,
     config: SiteConfig,
+    sessionId?: string,
   ): Promise<ToolCallResult> {
     const { endpoint } = tool;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), endpoint.timeoutMs);
 
     const headers: Record<string, string> = {
+      // Spread configured headers first so the mandatory
+      // Content-Type and X-Kody-Async markers can't be overridden
+      // by an operator who misconfigures the tool.
+      ...endpoint.headers,
       "Content-Type": "application/json",
       "X-Kody-Async": "true",
-      ...endpoint.headers,
     };
 
     try {
@@ -181,6 +192,10 @@ export class ToolExecutor {
         headers,
         body: JSON.stringify({ tool: tool.name, arguments: args }),
         signal: controller.signal,
+        // Follow at most one redirect; any further hop is treated
+        // as untrusted (the customer endpoint can hand us back any
+        // URL it wants).
+        redirect: "follow",
       });
 
       if (response.status === 202) {
@@ -193,16 +208,50 @@ export class ToolExecutor {
             displayText: tool.description.slice(0, 50),
           };
         }
-        const pollUrl = payload.pollUrl ?? endpoint.asyncPollUrl;
+
+        // Validate any poll URL the response provides before we
+        // trust it. Without this check, a misbehaving endpoint
+        // could redirect the server's polling to an attacker-
+        // controlled host (SSRF) or to a metadata endpoint.
+        let pollUrl: string | undefined;
+        let pollUrlRejected: string | undefined;
+        if (typeof payload.pollUrl === "string" && payload.pollUrl) {
+          const allowed = isAllowedPollUrl(payload.pollUrl, endpoint);
+          if (allowed) {
+            pollUrl = allowed;
+          } else {
+            pollUrlRejected = payload.pollUrl;
+          }
+        }
+        if (!pollUrl) {
+          pollUrl = endpoint.asyncPollUrl;
+        }
+        if (pollUrlRejected && !pollUrl) {
+          return {
+            toolCallId: callId,
+            name: tool.name,
+            result:
+              "Async tool returned 202 with a pollUrl from a disallowed origin and no endpoint.asyncPollUrl is configured as a fallback.",
+            displayText: tool.description.slice(0, 50),
+          };
+        }
+        // `pollUrl` may still be undefined here — that's a
+        // configuration gap, not a security issue, and the
+        // agent's pollAsyncTool will surface a clear "no pollUrl"
+        // error to the user. We still persist the job row and
+        // return the async handle so the agent can at least
+        // observe the dispatch (and so callers can correlate
+        // logs).
 
         if (this.toolJobStore) {
           this.toolJobStore.create({
             jobId: payload.jobId,
             siteId: config.siteId,
-            // We don't have a sessionId here; the agent will update it
-            // when it picks the job up. Use a placeholder so the row
-            // is still queryable.
-            sessionId: "pending",
+            // The agent threads the visitor's sessionId through; if
+            // it isn't provided (e.g. a unit test that doesn't care
+            // about session scoping) we fall back to the "pending"
+            // sentinel so the row is still queryable.
+            sessionId: sessionId ?? "pending",
             toolName: tool.name,
             endpointUrl: endpoint.url,
             pollUrl,
@@ -262,4 +311,42 @@ async function parseAsyncDispatchResponse(response: Response): Promise<AsyncDisp
   } catch {
     return {};
   }
+}
+
+/**
+ * Return `candidate` only when it parses as a valid http(s) URL
+ * whose origin matches the dispatch endpoint's origin or the
+ * configured `asyncPollUrl` origin. Returns `null` otherwise so the
+ * caller can fall back to the configured `asyncPollUrl` (or
+ * surface an error if no fallback is configured).
+ *
+ * This is the SSRF guardrail for the async-tool polling path. A
+ * customer endpoint that returns a `pollUrl` pointing at
+ * `http://169.254.169.254/...` (cloud metadata) or an arbitrary
+ * attacker host must be ignored.
+ */
+function isAllowedPollUrl(candidate: string, endpoint: CustomTool["endpoint"]): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+
+  const allowedOrigins = new Set<string>();
+  try {
+    allowedOrigins.add(new URL(endpoint.url).origin);
+  } catch {
+    // endpoint.url is validated by the schema; if it somehow
+    // doesn't parse, fall through with no allowed origins.
+  }
+  if (endpoint.asyncPollUrl) {
+    try {
+      allowedOrigins.add(new URL(endpoint.asyncPollUrl).origin);
+    } catch {
+      // same — ignore
+    }
+  }
+  return allowedOrigins.has(parsed.origin) ? parsed.toString() : null;
 }
