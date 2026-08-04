@@ -196,28 +196,44 @@ const toolParameterSchema = z.object({
   enum: z.array(z.string()).optional(),
 });
 
-const customToolSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(64)
-    .regex(/^[a-z_][a-z0-9_]*$/),
-  description: z.string().min(1).max(1000),
-  parameters: z.object({
-    type: z.literal("object"),
-    properties: z.record(toolParameterSchema),
-    required: z.array(z.string()).default([]),
-  }),
-  endpoint: z.object({
-    url: z.string().url(),
-    method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
-    headers: z.record(z.string()).default({}),
-    timeoutMs: z.number().int().min(1000).max(30000).default(10000),
-    async: z.boolean().default(false),
-    asyncPollUrl: z.string().url().optional(),
-    asyncPollIntervalMs: z.number().int().min(500).max(60000).default(2000),
-  }),
-});
+const customToolSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z_][a-z0-9_]*$/),
+    description: z.string().min(1).max(1000),
+    parameters: z.object({
+      type: z.literal("object"),
+      properties: z.record(toolParameterSchema),
+      required: z.array(z.string()).default([]),
+    }),
+    endpoint: z
+      .object({
+        url: z.string().url(),
+        method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
+        headers: z.record(z.string()).default({}),
+        timeoutMs: z.number().int().min(1000).max(30000).default(10000),
+        async: z.boolean().default(false),
+        asyncPollUrl: z.string().url().optional(),
+        asyncPollIntervalMs: z.number().int().min(500).max(60000).default(2000),
+      })
+      // When `async` is on, an async poll URL is required: the
+      // server needs somewhere to GET the job status from. The
+      // 202 response from the dispatch endpoint MAY include its
+      // own `pollUrl`, but if it doesn't, we fall back to the
+      // configured `asyncPollUrl` — and we won't have a fallback
+      // to fall back to. This validation surfaces the missing
+      // config at startup rather than as a runtime 400/500.
+      .refine(
+        (ep) => !ep.async || (ep.asyncPollUrl !== undefined && ep.asyncPollUrl.length > 0),
+        {
+          message: "endpoint.asyncPollUrl is required when endpoint.async is true",
+          path: ["asyncPollUrl"],
+        },
+      ),
+  });
 
 export const toolsSchema = z.object({
   enabled: z.boolean().default(false),
