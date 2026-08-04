@@ -22,10 +22,11 @@ const mockedStream = vi.mocked(streamChatCompletion);
  * `onToken` callback so the agent's `fullContent` accumulator picks
  * it up the same way the real provider would.
  */
-function mockStream(
-  returnValue: { content: string; toolCalls: unknown[]; finishReason: string },
-  expect: typeof import("vitest").expect,
-) {
+function mockStream(returnValue: {
+  content: string;
+  toolCalls: unknown[];
+  finishReason: string;
+}) {
   mockedStream.mockImplementationOnce(async (_config, _messages, callbacks) => {
     if (returnValue.finishReason === "stop" && returnValue.content) {
       // Emit the content as if it were streamed token-by-token.
@@ -36,8 +37,6 @@ function mockStream(
     }
     return returnValue;
   });
-  // silence unused-arg lint
-  void expect;
 }
 
 function chunkString(s: string, size: number): string[] {
@@ -122,25 +121,20 @@ describe("runAgent — async tool branch", () => {
   afterEach(() => {
     db.close();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("completes a turn with a tool that finishes in one async poll", async () => {
     // First AI call: emit a tool call to build_report.
-    mockStream(
-      {
-        content: "",
-        toolCalls: [
-          { id: "call-1", function: { name: "build_report", arguments: '{"topic":"x"}' } },
-        ],
-        finishReason: "tool_calls",
-      },
-      expect,
-    );
+    mockStream({
+      content: "",
+      toolCalls: [
+        { id: "call-1", function: { name: "build_report", arguments: '{"topic":"x"}' } },
+      ],
+      finishReason: "tool_calls",
+    });
     // Second AI call (after the tool result): final answer.
-    mockStream(
-      { content: "All done.", toolCalls: [], finishReason: "stop" },
-      expect,
-    );
+    mockStream({ content: "All done.", toolCalls: [], finishReason: "stop" });
 
     // 202 dispatch to the tool endpoint.
     vi.mocked(fetch).mockResolvedValueOnce({
@@ -215,18 +209,12 @@ describe("runAgent — async tool branch", () => {
   });
 
   it("times out the async tool after asyncMaxWaitMs", async () => {
-    mockStream(
-      {
-        content: "",
-        toolCalls: [{ id: "call-1", function: { name: "build_report", arguments: "{}" } }],
-        finishReason: "tool_calls",
-      },
-      expect,
-    );
-    mockStream(
-      { content: "Sorry, took too long.", toolCalls: [], finishReason: "stop" },
-      expect,
-    );
+    mockStream({
+      content: "",
+      toolCalls: [{ id: "call-1", function: { name: "build_report", arguments: "{}" } }],
+      finishReason: "tool_calls",
+    });
+    mockStream({ content: "Sorry, took too long.", toolCalls: [], finishReason: "stop" });
 
     // 202 dispatch.
     vi.mocked(fetch).mockResolvedValueOnce({
@@ -279,18 +267,12 @@ describe("runAgent — async tool branch", () => {
   });
 
   it("returns the failure result when the async tool fails", async () => {
-    mockStream(
-      {
-        content: "",
-        toolCalls: [{ id: "call-1", function: { name: "build_report", arguments: "{}" } }],
-        finishReason: "tool_calls",
-      },
-      expect,
-    );
-    mockStream(
-      { content: "Sorry, tool failed.", toolCalls: [], finishReason: "stop" },
-      expect,
-    );
+    mockStream({
+      content: "",
+      toolCalls: [{ id: "call-1", function: { name: "build_report", arguments: "{}" } }],
+      finishReason: "tool_calls",
+    });
+    mockStream({ content: "Sorry, tool failed.", toolCalls: [], finishReason: "stop" });
 
     vi.mocked(fetch).mockResolvedValueOnce({
       status: 202,

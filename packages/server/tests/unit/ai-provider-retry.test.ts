@@ -84,6 +84,7 @@ describe("streamChatCompletion retry behaviour", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("retries on 429 and surfaces onRetry", async () => {
@@ -181,8 +182,12 @@ describe("streamChatCompletion retry behaviour", () => {
   });
 
   it("respects Retry-After on 429 and reports the delay in onRetry", async () => {
+    // Use a sub-second Retry-After (50ms) so the test doesn't
+    // actually sleep a full second. We just want to assert that
+    // the parsed delayMs reflects the header value, not block
+    // the test runner for a real wall-clock second.
     vi.mocked(fetch)
-      .mockResolvedValueOnce(makeErrorResponse(429, "rl", { "Retry-After": "1" }))
+      .mockResolvedValueOnce(makeErrorResponse(429, "rl", { "Retry-After": "0.05" }))
       .mockResolvedValueOnce(makeStreamResponse([tokenChunk("Hi"), doneChunk("stop")]));
 
     const onRetry = vi.fn();
@@ -193,7 +198,7 @@ describe("streamChatCompletion retry behaviour", () => {
       onRetry,
     };
     const result = await streamChatCompletion(
-      { ...baseConfig, retry: { maxAttempts: 2, baseDelayMs: 5, maxDelayMs: 5 } },
+      { ...baseConfig, retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 5 } },
       [{ role: "user", content: "hi" }],
       cb,
     );
@@ -201,8 +206,9 @@ describe("streamChatCompletion retry behaviour", () => {
     expect(result.content).toBe("Hi");
     expect(onRetry).toHaveBeenCalledTimes(1);
     const call = onRetry.mock.calls[0]?.[0] as { delayMs: number; reason: string };
-    // Retry-After: 1 → 1000ms (capped by our 60s ceiling, but 1s is well under)
-    expect(call.delayMs).toBeGreaterThanOrEqual(1000);
+    // Retry-After: 0.05s → 50ms (well under the 60s ceiling).
+    expect(call.delayMs).toBeGreaterThanOrEqual(50);
+    expect(call.delayMs).toBeLessThan(500);
     expect(call.reason).toContain("429");
   });
 

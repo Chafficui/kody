@@ -92,6 +92,7 @@ describe("ToolExecutor — async dispatch", () => {
   afterEach(() => {
     db.close();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("sends X-Kody-Async header on async dispatch", async () => {
@@ -126,12 +127,11 @@ describe("ToolExecutor — async dispatch", () => {
 
     expect(result.async?.jobId).toBe("job-abc");
     const jobs = store.list({ siteId: "site-async" });
-    // Either we recorded the job with the endpoint's jobId, OR the
-    // store recorded one with its own uuid. In the current
-    // implementation we don't bind the executor's jobId to the
-    // stored row (the row is keyed by the endpoint's URL, not the
-    // endpoint's jobId), so the stored row will be a fresh uuid.
-    expect(jobs.length).toBeGreaterThanOrEqual(1);
+    // The executor threads the endpoint-supplied jobId straight
+    // into toolJobStore.create so the persisted row shares the
+    // endpoint's handle, not a fresh UUID.
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.jobId).toBe("job-abc");
     expect(jobs[0]?.toolName).toBe("build_report");
     expect(jobs[0]?.status).toBe("pending");
   });

@@ -47,109 +47,151 @@ describe("ResponseCache", () => {
 
   it("is a no-op when disabled", () => {
     cache = new ResponseCache(disabledConfig);
-    cache.set(sampleInput(), "hello");
-    expect(cache.get(sampleInput())).toBeNull();
-    expect(cache.isEnabled()).toBe(false);
+    cache.set(sampleInput(), disabledConfig, "hello");
+    expect(cache.get(sampleInput(), disabledConfig)).toBeNull();
+    expect(cache.isEnabled(disabledConfig)).toBe(false);
   });
 
   it("stores and retrieves an entry when enabled", () => {
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput(), "Sure — here's how to pay your bill.");
-    const hit = cache.get(sampleInput());
+    cache.set(sampleInput(), enabledConfig, "Sure — here's how to pay your bill.");
+    const hit = cache.get(sampleInput(), enabledConfig);
     expect(hit).not.toBeNull();
     expect(hit?.content).toBe("Sure — here's how to pay your bill.");
   });
 
   it("returns null on a miss", () => {
     cache = new ResponseCache(enabledConfig);
-    expect(cache.get(sampleInput())).toBeNull();
+    expect(cache.get(sampleInput(), enabledConfig)).toBeNull();
   });
 
   it("expires entries after the configured TTL", () => {
-    cache = new ResponseCache({ ...enabledConfig, ttlSeconds: 60 });
-    cache.set(sampleInput(), "first");
-    expect(cache.get(sampleInput())?.content).toBe("first");
+    const cfg = { ...enabledConfig, ttlSeconds: 60 };
+    cache = new ResponseCache(cfg);
+    cache.set(sampleInput(), cfg, "first");
+    expect(cache.get(sampleInput(), cfg)?.content).toBe("first");
     vi.advanceTimersByTime(61_000);
-    expect(cache.get(sampleInput())).toBeNull();
+    expect(cache.get(sampleInput(), cfg)).toBeNull();
   });
 
-  it("treats temperature differences below 0.1 as the same key", () => {
+  it("rounds temperature to one decimal place for the key", () => {
+    // 0.71 and 0.70001 both round to 0.7 → same key.
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput({ temperature: 0.71 }), "hot");
-    const hit = cache.get(sampleInput({ temperature: 0.70001 }));
+    cache.set(sampleInput({ temperature: 0.71 }), enabledConfig, "hot");
+    const hit = cache.get(sampleInput({ temperature: 0.70001 }), enabledConfig);
     expect(hit?.content).toBe("hot");
   });
 
-  it("treats temperature differences >= 0.1 as different keys", () => {
+  it("treats temperatures whose rounded values differ as different keys", () => {
+    // 0.7 rounds to 0.7; 0.8 rounds to 0.8 → different keys.
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput({ temperature: 0.7 }), "cool");
-    const hit = cache.get(sampleInput({ temperature: 0.8 }));
+    cache.set(sampleInput({ temperature: 0.7 }), enabledConfig, "cool");
+    const hit = cache.get(sampleInput({ temperature: 0.8 }), enabledConfig);
+    expect(hit).toBeNull();
+  });
+
+  it("boundary: 0.74 and 0.75 round to different decimal values", () => {
+    // 0.74 rounds to 0.7; 0.75 rounds to 0.8 (banker's rounding
+    // aside — JS `Math.round(0.75 * 10) / 10 === 0.8`).
+    cache = new ResponseCache(enabledConfig);
+    cache.set(sampleInput({ temperature: 0.74 }), enabledConfig, "low");
+    const hit = cache.get(sampleInput({ temperature: 0.75 }), enabledConfig);
     expect(hit).toBeNull();
   });
 
   it("treats different lastUserMessage as different keys", () => {
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput({ lastUserMessage: "A" }), "ans A");
-    expect(cache.get(sampleInput({ lastUserMessage: "B" }))).toBeNull();
+    cache.set(sampleInput({ lastUserMessage: "A" }), enabledConfig, "ans A");
+    expect(cache.get(sampleInput({ lastUserMessage: "B" }), enabledConfig)).toBeNull();
   });
 
   it("treats different last4MessagesHash as different keys", () => {
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput({ last4MessagesHash: "h1" }), "ans1");
-    expect(cache.get(sampleInput({ last4MessagesHash: "h2" }))).toBeNull();
+    cache.set(sampleInput({ last4MessagesHash: "h1" }), enabledConfig, "ans1");
+    expect(cache.get(sampleInput({ last4MessagesHash: "h2" }), enabledConfig)).toBeNull();
   });
 
   it("keeps separate entries per site", () => {
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput({ siteId: "site-a" }), "for a");
-    cache.set(sampleInput({ siteId: "site-b" }), "for b");
-    expect(cache.get(sampleInput({ siteId: "site-a" }))?.content).toBe("for a");
-    expect(cache.get(sampleInput({ siteId: "site-b" }))?.content).toBe("for b");
+    cache.set(sampleInput({ siteId: "site-a" }), enabledConfig, "for a");
+    cache.set(sampleInput({ siteId: "site-b" }), enabledConfig, "for b");
+    expect(cache.get(sampleInput({ siteId: "site-a" }), enabledConfig)?.content).toBe("for a");
+    expect(cache.get(sampleInput({ siteId: "site-b" }), enabledConfig)?.content).toBe("for b");
     expect(cache.size("site-a")).toBe(1);
     expect(cache.size("site-b")).toBe(1);
   });
 
-  it("evicts the oldest entry when maxEntries is exceeded (LRU)", () => {
-    cache = new ResponseCache({ ...enabledConfig, maxEntries: 3 });
+  it("evicts the oldest entry when maxEntries is exceeded (global LRU)", () => {
+    const cfg = { ...enabledConfig, maxEntries: 3 };
+    cache = new ResponseCache(cfg);
     for (let i = 0; i < 5; i++) {
       cache.set(
         sampleInput({ lastUserMessage: `q-${i}`, last4MessagesHash: `h-${i}` }),
+        cfg,
         `a-${i}`,
       );
     }
     expect(cache.size("site-1")).toBe(3);
     // First two should have been evicted
-    expect(cache.get(sampleInput({ lastUserMessage: "q-0", last4MessagesHash: "h-0" }))).toBeNull();
-    expect(cache.get(sampleInput({ lastUserMessage: "q-1", last4MessagesHash: "h-1" }))).toBeNull();
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "q-0", last4MessagesHash: "h-0" }),
+        cfg,
+      ),
+    ).toBeNull();
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "q-1", last4MessagesHash: "h-1" }),
+        cfg,
+      ),
+    ).toBeNull();
     // Most recent should still be present
-    expect(cache.get(sampleInput({ lastUserMessage: "q-4", last4MessagesHash: "h-4" }))?.content).toBe(
-      "a-4",
-    );
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "q-4", last4MessagesHash: "h-4" }),
+        cfg,
+      )?.content,
+    ).toBe("a-4");
   });
 
   it("refreshes recency on get (LRU)", () => {
-    cache = new ResponseCache({ ...enabledConfig, maxEntries: 2 });
-    cache.set(sampleInput({ lastUserMessage: "a", last4MessagesHash: "h-a" }), "1");
-    cache.set(sampleInput({ lastUserMessage: "b", last4MessagesHash: "h-b" }), "2");
+    const cfg = { ...enabledConfig, maxEntries: 2 };
+    cache = new ResponseCache(cfg);
+    cache.set(sampleInput({ lastUserMessage: "a", last4MessagesHash: "h-a" }), cfg, "1");
+    cache.set(sampleInput({ lastUserMessage: "b", last4MessagesHash: "h-b" }), cfg, "2");
     // Touch "a" so it becomes the most-recently-used.
-    expect(cache.get(sampleInput({ lastUserMessage: "a", last4MessagesHash: "h-a" }))?.content).toBe(
-      "1",
-    );
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "a", last4MessagesHash: "h-a" }),
+        cfg,
+      )?.content,
+    ).toBe("1");
     // Insert a third entry; "b" should now be evicted, not "a".
-    cache.set(sampleInput({ lastUserMessage: "c", last4MessagesHash: "h-c" }), "3");
-    expect(cache.get(sampleInput({ lastUserMessage: "a", last4MessagesHash: "h-a" }))?.content).toBe(
-      "1",
-    );
-    expect(cache.get(sampleInput({ lastUserMessage: "b", last4MessagesHash: "h-b" }))).toBeNull();
-    expect(cache.get(sampleInput({ lastUserMessage: "c", last4MessagesHash: "h-c" }))?.content).toBe(
-      "3",
-    );
+    cache.set(sampleInput({ lastUserMessage: "c", last4MessagesHash: "h-c" }), cfg, "3");
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "a", last4MessagesHash: "h-a" }),
+        cfg,
+      )?.content,
+    ).toBe("1");
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "b", last4MessagesHash: "h-b" }),
+        cfg,
+      ),
+    ).toBeNull();
+    expect(
+      cache.get(
+        sampleInput({ lastUserMessage: "c", last4MessagesHash: "h-c" }),
+        cfg,
+      )?.content,
+    ).toBe("3");
   });
 
   it("clear(siteId) drops only the given site", () => {
     cache = new ResponseCache(enabledConfig);
-    cache.set(sampleInput({ siteId: "site-a" }), "for a");
-    cache.set(sampleInput({ siteId: "site-b" }), "for b");
+    cache.set(sampleInput({ siteId: "site-a" }), enabledConfig, "for a");
+    cache.set(sampleInput({ siteId: "site-b" }), enabledConfig, "for b");
     cache.clear("site-a");
     expect(cache.size("site-a")).toBe(0);
     expect(cache.size("site-b")).toBe(1);
