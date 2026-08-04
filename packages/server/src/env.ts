@@ -10,7 +10,14 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().min(8).optional(),
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().optional(),
-  PUBLIC_APP_URL: z.string().url().optional(),
+  /**
+   * Public origin where this server is reachable, e.g.
+   * `https://kody.example.com`. Used by the demo seed to add a
+   * matching `allowedOrigin` for the demo site, and by any future
+   * caller-facing code that needs to know the public URL.
+   * Comma-separated for multiple origins.
+   */
+  PUBLIC_ORIGIN: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

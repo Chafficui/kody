@@ -124,7 +124,7 @@ pnpm test             # all tests
 pnpm test -- --watch  # watch mode
 ```
 
-338 tests covering validators, guardrails, middleware, routes, widget components, and utilities.
+402 tests covering validators, guardrails, middleware, routes, widget components, and utilities.
 
 ## Environment Variables
 
@@ -135,6 +135,7 @@ pnpm test -- --watch  # watch mode
 | `ADMIN_EMAIL` | — | Initial admin user email (first boot) |
 | `ADMIN_PASSWORD` | — | Initial admin user password (first boot) |
 | `NODE_ENV` | `development` | Environment |
+| `PUBLIC_ORIGIN` | — | Comma-separated public origins added to the demo site's `allowedOrigins` (e.g. `https://kody.example.com`) |
 
 ## Docker
 

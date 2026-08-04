@@ -20,9 +20,18 @@ if (env.ADMIN_EMAIL && env.ADMIN_PASSWORD) {
 const existing = app.siteStore.getSiteConfig("demo");
 if (!existing) {
   try {
+    // Build the allowed-origin list. Self-hosters set PUBLIC_ORIGIN
+    // to their public URL; the localhost ports are always added so
+    // the bundled demo page at GET / works out of the box.
+    const publicOrigins = env.PUBLIC_ORIGIN
+      ? env.PUBLIC_ORIGIN.split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : [];
     app.siteStore.createSite({
       siteId: "demo",
       allowedOrigins: [
+        ...publicOrigins,
         `http://localhost:${env.PORT}`,
         "http://localhost:3000",
         "http://localhost:3001",
@@ -142,10 +151,21 @@ Embedding: Add a script tag pointing to your server's /widget.js with data-site-
       ],
       enabled: true,
     });
-    console.log("Demo site 'demo' created (allowed origins: http://localhost:" + env.PORT + " and a few common dev ports)");
+    const port = `http://localhost:${env.PORT}`;
+    const origins = [port, "http://localhost:3000", "http://localhost:3001", "http://localhost:4567"]
+      .concat(publicOrigins)
+      .join(", ");
+    console.log(`Demo site 'demo' created (allowed origins: ${origins})`);
   } catch {
     // already exists or invalid — skip
   }
+} else {
+  // Demo site already exists. This is the idempotent re-seed
+  // path: we never overwrite operator changes (e.g. an admin who
+  // edited the demo site's branding through /admin). A future
+  // migration can re-introduce seeding once we have a "seed
+  // version" notion.
+  console.log("Demo site 'demo' already exists; leaving operator config untouched");
 }
 
 app.listen(env.PORT, () => {
