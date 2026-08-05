@@ -155,30 +155,68 @@ describe("ResponseCache", () => {
     ).toBe("a-4");
   });
 
-  it("evicts across sites using the per-site maxEntries (global LRU)", () => {
-    // site-a's config asks for a small per-site cap; the deployment
-    // default in storageConfig is *larger* so the per-site value
-    // is what eviction must honor. site-b's per-site cap is the
-    // same as the deployment default so the test can also verify
-    // that the global LRU evicts site-a's oldest entry when a
-    // site-b write pushes the pool over the cap.
+  it("enforces per-site ring cap and global cap independently", () => {
+    // The cache has TWO independent caps:
+    //   1. **Per-site ring cap** (per-site `config.maxEntries`,
+    //      with `storageConfig.maxEntries` as the fallback).
+    //   2. **Global cap** (`storageConfig.maxEntries`).
+    //
+    // Both must hold. This test wires them to *different* values
+    // so the two paths are exercised separately:
+    //   - siteA cap = 2, siteB cap = 4 (both *smaller* than the
+    //     deployment cap of 5)
+    //   - storageConfig cap = 5 (the deployment-wide global cap)
+    //
+    // Filling 2 site-a + 1 site-b = 3 entries stays within both
+    // caps. Adding b2 (total = 4) still stays within siteB's
+    // per-site cap (2 ≤ 4) and within the global cap (4 ≤ 5), so
+    // no eviction should happen yet.
     const siteA = { ...enabledConfig, maxEntries: 2 };
-    const siteB = { ...enabledConfig, maxEntries: 3 };
-    cache = new ResponseCache({ ...enabledConfig, maxEntries: 3 });
+    const siteB = { ...enabledConfig, maxEntries: 4 };
+    cache = new ResponseCache({ ...enabledConfig, maxEntries: 5 });
 
-    // Fill the shared pool with 2 entries from site-a + 1 from
-    // site-b. Total is 3, exactly at site-b's per-site cap and
-    // the deployment cap.
     cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA, "A1");
     cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA, "A2");
     cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b1", last4MessagesHash: "hb1" }), siteB, "B1");
     expect(cache.totalSize()).toBe(3);
 
-    // Add a second site-b entry. Total = 4 > site-b's per-site
-    // cap (3), so the global LRU must evict site-a's *oldest*
-    // entry (a1). site-b's per-site cap is the active one — not
-    // the storageConfig default of 3 and not site-a's cap of 2 —
-    // because eviction is invoked by site-b's `set`.
+    // Add a second site-b entry. total = 4 ≤ global cap (5) and
+    // site-b's per-site cap (2 ≤ 4) — no eviction yet.
+    cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b2", last4MessagesHash: "hb2" }), siteB, "B2");
+    expect(cache.totalSize()).toBe(4);
+    expect(cache.size("site-a")).toBe(2);
+    expect(cache.size("site-b")).toBe(2);
+
+    // Add a third site-b entry. site-b's per-site cap is 4, so
+    // 3 ≤ 4 — no per-site eviction. total = 5 ≤ global cap (5) —
+    // no global eviction either. Still no eviction.
+    cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b3", last4MessagesHash: "hb3" }), siteB, "B3");
+    expect(cache.totalSize()).toBe(5);
+    expect(
+      cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA)?.content,
+    ).toBe("A1");
+  });
+
+  it("enforces the global cap by evicting the oldest entry from any site", () => {
+    // With per-site caps well above the global cap, the global
+    // bound is the active one. site-a fills two entries; site-b
+    // writes a third that pushes the total past the global cap
+    // (3), so the global LRU must evict the oldest entry in the
+    // pool — which is site-a's first insert, not site-b's.
+    const siteA = { ...enabledConfig, maxEntries: 100 };
+    const siteB = { ...enabledConfig, maxEntries: 100 };
+    cache = new ResponseCache({ ...enabledConfig, maxEntries: 3 });
+
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA, "A1");
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA, "A2");
+    cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b1", last4MessagesHash: "hb1" }), siteB, "B1");
+    expect(cache.totalSize()).toBe(3);
+
+    // site-b's write pushes the pool to 4 > 3. The per-site caps
+    // (100) don't apply, so the *global* LRU evicts the oldest
+    // entry — site-a's "a1" — to bring the pool back to the
+    // deployment cap. site-a's "a2" is not the victim because
+    // site-a did not write here; only the global tail is.
     cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b2", last4MessagesHash: "hb2" }), siteB, "B2");
 
     expect(cache.totalSize()).toBe(3);
@@ -186,7 +224,7 @@ describe("ResponseCache", () => {
       cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA),
     ).toBeNull();
     // The newer site-a entry must still be there — a different
-    // site wrote, not site-a, so a2 is not the LRU victim.
+    // site wrote, so a2 is not the LRU victim.
     expect(
       cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA)?.content,
     ).toBe("A2");
@@ -205,9 +243,11 @@ describe("ResponseCache", () => {
     // insert, the per-site cap must take effect — the third
     // site-a insert must evict the first site-a entry, even
     // though 3 < 10 (the deployment default) would otherwise
-    // allow it. This is the exact failure mode the previous
+    // allow it. This is the failure mode the previous
     // implementation had: it only looked at storageConfig and
-    // ignored the per-site override.
+    // ignored the per-site override. The fix splits eviction
+    // into two passes — a per-site ring trim first, then the
+    // global cap — so a tight per-site cap always wins.
     const siteA = { ...enabledConfig, maxEntries: 2 };
     cache = new ResponseCache({ ...enabledConfig, maxEntries: 10 });
 

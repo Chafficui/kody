@@ -67,15 +67,27 @@ export type ResponseCacheStorageConfig = {
  *
  * Keys are derived from a hash of the request shape (see `buildKey`)
  * so we don't keep the original prompt in memory. Entries are stored
- * in a single global pool with a hard cap (per-site
- * `config.maxEntries` with the deployment-wide
- * `storageConfig.maxEntries` as fallback), which is fairer than a
- * per-site cap when a chatty site could otherwise evict entries
- * from a quiet one — and it's also what `maxEntries` advertises.
+ * in a shared pool with **two independent caps**:
+ *   1. **Per-site ring cap** — the writing site's `config.maxEntries`
+ *      (with the deployment-wide `storageConfig.maxEntries` as a
+ *      fallback). Enforced first so a site only ever evicts its own
+ *      entries to fit its own cap, regardless of what other tenants
+ *      are doing.
+ *   2. **Global cap** — `storageConfig.maxEntries` (with a hard
+ *      1000-entry fallback). Enforced second so the shared pool
+ *      can never grow past the deployment-wide budget, even if a
+ *      single chatty tenant would otherwise blow the memory limit.
+ *
+ * Without the per-site ring cap a chatty site could evict entries
+ * from a quiet one on every write (because the eviction helper
+ * used the global tail as the victim), and without the global cap
+ * a tenant with an unlimited `maxEntries` would consume the entire
+ * shared pool. Both caps are now enforced together.
  *
  * Behaviour:
  *   - `get` refreshes recency by moving the node to the head of the LRU list
- *   - `set` evicts the oldest entries when the global cap is exceeded
+ *   - `set` evicts within the writing site's ring first, then
+ *     trims the global pool to its deployment-wide cap
  *   - Entries older than `ttlSeconds` are treated as misses and purged
  *   - Site rings are dropped when they become empty so inactive
  *     sites don't keep their ring resident
@@ -162,7 +174,7 @@ export class ResponseCache {
     this.totalEntries++;
     this.attachNode(input.siteId, key);
 
-    this.evictIfOverCapacity(config);
+    this.evictIfOverCapacity(input.siteId, config);
   }
 
   /**
@@ -197,19 +209,71 @@ export class ResponseCache {
     return this.totalEntries;
   }
 
-  private evictIfOverCapacity(siteConfig: ResponseCacheConfig): void {
-    // Resolve the cap the same way ttlSeconds is resolved above:
-    // per-site override first, then the deployment-wide default
-    // from the storageConfig, then a hard fallback so a missing
-    // config never grows the cache unbounded.
-    const max = siteConfig.maxEntries ?? this.storageConfig.maxEntries ?? 1000;
-    while (this.totalEntries > max && this.tail) {
+  private evictIfOverCapacity(siteId: string, siteConfig: ResponseCacheConfig): void {
+    // Two distinct caps are enforced here:
+    //   1. The **per-site ring** cap: the writing site's
+    //      `maxEntries` (with the deployment-wide default as a
+    //      fallback). When a site writes more than its own cap
+    //      allows, the LRU victim must come from that site's own
+    //      ring — never from a quiet neighbour.
+    //   2. The **global** cap: `storageConfig.maxEntries` (with a
+    //      hard 1000 fallback). The shared pool can never grow
+    //      past this regardless of how many sites are writing,
+    //      so a single chatty tenant can't blow the deployment's
+    //      memory budget.
+    // Resolved independently so a tiny per-site cap doesn't
+    // shadow the deployment-wide global cap and vice versa.
+    const siteMax = siteConfig.maxEntries ?? this.storageConfig.maxEntries ?? 1000;
+    const globalMax = this.storageConfig.maxEntries ?? 1000;
+
+    // 1. Evict within the writing site until its own ring is
+    //    within its own cap. We walk the LRU list and skip nodes
+    //    that belong to other sites — those will only be removed
+    //    by the global cap below.
+    const siteRing = this.rings.get(siteId);
+    if (siteRing) {
+      while (siteRing.size > siteMax && this.tail) {
+        // Find the oldest node for THIS site. We can't just take
+        // the global tail because it may belong to a different
+        // site; scan from the tail inward.
+        const victim = this.findOldestForSite(siteId);
+        if (!victim) break;
+        this.unlinkNode(victim.siteId, victim.key);
+        siteRing.delete(victim.key);
+        if (siteRing.size === 0) this.rings.delete(victim.siteId);
+      }
+    }
+
+    // 2. Evict the global LRU tail until the shared pool fits the
+    //    deployment-wide cap. The victim here may be from any
+    //    site, not just the writing one — that's the whole point
+    //    of a shared global bound.
+    while (this.totalEntries > globalMax && this.tail) {
       const victim = this.tail;
       this.unlinkNode(victim.siteId, victim.key);
       const ring = this.rings.get(victim.siteId);
       ring?.delete(victim.key);
       if (ring && ring.size === 0) this.rings.delete(victim.siteId);
     }
+  }
+
+  /**
+   * Walk the LRU list from the tail and return the oldest node
+   * that belongs to the given site, or `null` if none exists.
+   * The previous implementation skipped this step and used the
+   * global tail as the eviction victim for *every* site, which
+   * meant the last writing site decided which other tenant got
+   * evicted. This helper restores the per-site ring as the
+   * primary eviction unit so a site only ever evicts its own
+   * entries to fit its own cap.
+   */
+  private findOldestForSite(siteId: string): LruNode | null {
+    let cursor: LruNode | null = this.tail;
+    while (cursor) {
+      if (cursor.siteId === siteId) return cursor;
+      cursor = cursor.prev;
+    }
+    return null;
   }
 
   private touchNode(siteId: string, key: string): void {
