@@ -497,6 +497,7 @@ components:
           items:
             type: string
             format: uri
+          minItems: 1
         branding:
           type: object
           properties:
@@ -636,6 +637,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 200
+              minItems: 1
             topicDescription:
               type: string
               minLength: 1
@@ -761,6 +763,7 @@ components:
                           required:
                             - question
                             - answer
+                        minItems: 1
                       url:
                         type: string
                         format: uri
@@ -1138,6 +1141,7 @@ components:
             type: string
             minLength: 1
             maxLength: 200
+          maxItems: 4
           default: []
         enabled:
           type: boolean
@@ -1161,6 +1165,7 @@ components:
           items:
             type: string
             format: uri
+          minItems: 1
         branding:
           type: object
           properties:
@@ -1299,6 +1304,7 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 200
+              minItems: 1
             topicDescription:
               type: string
               minLength: 1
@@ -1424,6 +1430,7 @@ components:
                           required:
                             - question
                             - answer
+                        minItems: 1
                       url:
                         type: string
                         format: uri
@@ -1803,6 +1810,7 @@ components:
             type: string
             minLength: 1
             maxLength: 200
+          maxItems: 4
           default: []
         enabled:
           type: boolean
@@ -2071,6 +2079,7 @@ components:
                 required:
                   - question
                   - answer
+              minItems: 1
             url:
               type: string
               format: uri
@@ -2169,6 +2178,7 @@ components:
             required:
               - question
               - answer
+          minItems: 1
         url:
           type: string
           format: uri

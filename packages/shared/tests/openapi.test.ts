@@ -71,6 +71,49 @@ describe("OpenAPI generator", () => {
     expect((aiProps.apiKey as { description: string }).description).toMatch(/Redacted/);
   });
 
+  it("redacts every ticket-provider secret in the SiteConfig read model", () => {
+    // The admin GET responses for /api/admin/sites and
+    // /api/admin/sites/{siteId} both reference SiteConfigRead, so every
+    // branch in the providers oneOf must have its credential field
+    // replaced with a redacted placeholder. This guards against a future
+    // schema rename (e.g. someone changing `apiToken` to `token`) silently
+    // slipping a real secret back into the read path.
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const read = spec.components.schemas.SiteConfigRead;
+    const tickets = ((read.properties as Record<string, Record<string, unknown>>).tickets ?? {}) as Record<string, unknown>;
+    const ticketsProps = (tickets.properties as Record<string, Record<string, unknown>>) ?? {};
+    const providers = (ticketsProps.providers as Record<string, unknown> | undefined) ?? {};
+    const providerItems = (providers.items as Record<string, unknown> | undefined) ?? {};
+    const branches = (providerItems.oneOf as Array<Record<string, unknown>> | undefined) ?? [];
+    // One branch per provider (jira, github, linear, email, webhook).
+    expect(branches.length).toBeGreaterThanOrEqual(5);
+
+    // Map each provider enum value to the field on its branch that holds
+    // the secret material we expect to be redacted.
+    const expected: Array<{ provider: string; field: string }> = [
+      { provider: "jira", field: "apiToken" },
+      { provider: "github", field: "token" },
+      { provider: "linear", field: "apiKey" },
+      { provider: "email", field: "smtpPass" },
+      { provider: "webhook", field: "secret" },
+    ];
+
+    for (const { provider, field } of expected) {
+      const branch = branches.find((b) => {
+        const props = (b.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+        const providerEnum = ((props.provider as { enum?: string[] } | undefined)?.enum ?? []) as string[];
+        return providerEnum.includes(provider);
+      });
+      expect(branch, `branch for provider "${provider}" should be documented`).toBeDefined();
+      const branchProps = ((branch as Record<string, unknown>).properties as Record<string, Record<string, unknown>>) ?? {};
+      const fieldSchema = branchProps[field];
+      expect(fieldSchema, `secret field "${field}" on ${provider} branch should be documented`).toBeDefined();
+      expect((fieldSchema as { description?: string }).description).toMatch(/Redacted/);
+    }
+  });
+
   it("emits named KnowledgeSource union branches", () => {
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
