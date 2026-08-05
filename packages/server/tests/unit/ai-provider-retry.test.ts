@@ -182,34 +182,50 @@ describe("streamChatCompletion retry behaviour", () => {
   });
 
   it("respects Retry-After on 429 and reports the delay in onRetry", async () => {
-    // Use a sub-second Retry-After (50ms) so the test doesn't
-    // actually sleep a full second. We just want to assert that
-    // the parsed delayMs reflects the header value, not block
-    // the test runner for a real wall-clock second.
-    vi.mocked(fetch)
-      .mockResolvedValueOnce(makeErrorResponse(429, "rl", { "Retry-After": "0.05" }))
-      .mockResolvedValueOnce(makeStreamResponse([tokenChunk("Hi"), doneChunk("stop")]));
+    // The Retry-After header is delta-seconds per RFC 9110.
+    // "0.05" is not a valid integer-seconds value (and would
+    // also depend on the provider rounding sub-second delays
+    // in a way the client can't predict), so use a valid
+    // integer-seconds value and fake timers to advance past
+    // the sleep without blocking the test runner.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(makeErrorResponse(429, "rl", { "Retry-After": "1" }))
+        .mockResolvedValueOnce(makeStreamResponse([tokenChunk("Hi"), doneChunk("stop")]));
 
-    const onRetry = vi.fn();
-    const cb: AiStreamCallbacks = {
-      onToken: vi.fn(),
-      onDone: vi.fn(),
-      onError: vi.fn(),
-      onRetry,
-    };
-    const result = await streamChatCompletion(
-      { ...baseConfig, retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 5 } },
-      [{ role: "user", content: "hi" }],
-      cb,
-    );
+      const onRetry = vi.fn();
+      const cb: AiStreamCallbacks = {
+        onToken: vi.fn(),
+        onDone: vi.fn(),
+        onError: vi.fn(),
+        onRetry,
+      };
+      // `setTimeout` inside the sleep helper is replaced by
+      // vi's fake timers when the call starts, so we can
+      // resolve the awaited promise by advancing the clock
+      // past the Retry-After delay.
+      const pending = streamChatCompletion(
+        { ...baseConfig, retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 5 } },
+        [{ role: "user", content: "hi" }],
+        cb,
+      );
+      // Let the in-flight fetch return and the route compute
+      // the Retry-After delay, then advance time past the
+      // sleep so the retry fetch can run.
+      await vi.advanceTimersByTimeAsync(1000);
+      const result = await pending;
 
-    expect(result.content).toBe("Hi");
-    expect(onRetry).toHaveBeenCalledTimes(1);
-    const call = onRetry.mock.calls[0]?.[0] as { delayMs: number; reason: string };
-    // Retry-After: 0.05s → 50ms (well under the 60s ceiling).
-    expect(call.delayMs).toBeGreaterThanOrEqual(50);
-    expect(call.delayMs).toBeLessThan(500);
-    expect(call.reason).toContain("429");
+      expect(result.content).toBe("Hi");
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      const call = onRetry.mock.calls[0]?.[0] as { delayMs: number; reason: string };
+      // Retry-After: 1s -> 1000ms (the parseRetryAfter helper
+      // multiplies by 1000 and caps at 60_000).
+      expect(call.delayMs).toBe(1000);
+      expect(call.reason).toContain("429");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries when fetch throws a network error", async () => {
