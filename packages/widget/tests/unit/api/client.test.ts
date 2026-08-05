@@ -104,6 +104,46 @@ describe("KodyApiClient", () => {
     });
   });
 
+  describe("redirect: 'error' on identity-bearing requests", () => {
+    // These three calls carry the x-kody-user-* / x-kody-user-context
+    // headers. fetch() strips `Authorization` on cross-origin redirect
+    // but forwards custom headers, which would leak identity if the
+    // server ever redirected. Rejecting redirects is the safe default
+    // for identity-bearing requests.
+    it("sendMessage sets redirect: 'error'", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(mockSSEResponse([]));
+      globalThis.fetch = fetchMock;
+
+      await client.sendMessage("hi", "sess", { onEvent: vi.fn() });
+
+      const chatCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/chat"));
+      const init = chatCall![1] as RequestInit;
+      expect(init.redirect).toBe("error");
+    });
+
+    it("sendFeedback sets redirect: 'error'", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+      globalThis.fetch = fetchMock;
+
+      await client.sendFeedback("sess", 0, "up");
+
+      const feedbackCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/feedback"));
+      const init = feedbackCall![1] as RequestInit;
+      expect(init.redirect).toBe("error");
+    });
+
+    it("deleteSession sets redirect: 'error'", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+      globalThis.fetch = fetchMock;
+
+      await client.deleteSession("sess-1");
+
+      const sessionCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/sessions/"));
+      const init = sessionCall![1] as RequestInit;
+      expect(init.redirect).toBe("error");
+    });
+  });
+
   describe("identity gating for untrusted origins", () => {
     it("withholds x-kody-user-id, traits, and context when baseUrl is plain http", async () => {
       const insecure = new KodyApiClient("http://api.example.com", "site-123");

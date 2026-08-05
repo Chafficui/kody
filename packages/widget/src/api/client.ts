@@ -155,6 +155,11 @@ export class KodyApiClient {
       await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
         method: "DELETE",
         headers: this.buildMessageHeaders(),
+        // Identity-bearing request: do not follow redirects. Fetch
+        // strips `Authorization` on cross-origin redirect but would
+        // forward our custom `x-kody-user-*` headers, leaking identity
+        // to a different host if the server ever redirects.
+        redirect: "error",
       });
     } catch {
       // best-effort deletion
@@ -170,6 +175,9 @@ export class KodyApiClient {
       await fetch(`${this.baseUrl}/api/feedback`, {
         method: "POST",
         headers: this.buildMessageHeaders(),
+        // Identity-bearing request: do not follow redirects. See
+        // deleteSession() for the rationale.
+        redirect: "error",
         body: JSON.stringify({
           siteId: this.siteId,
           sessionId,
@@ -197,6 +205,9 @@ export class KodyApiClient {
       res = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",
         headers: this.buildMessageHeaders(),
+        // Identity-bearing request: do not follow redirects. See
+        // deleteSession() for the rationale.
+        redirect: "error",
         body: JSON.stringify({
           siteId: this.siteId,
           sessionId,
