@@ -150,16 +150,21 @@ the job reaches a terminal state, the per-turn budget
 aborts. Persisted job rows can be inspected via:
 
 ```bash
-curl https://your-server/api/tool-jobs/<jobId> \
+curl https://your-server/api/tool-jobs/<jobId>?sessionId=<sessionId> \
   -H "x-kody-site-id: <siteId>"
 ```
 
 The route requires site-scoped authentication: the `(siteId,
 jobId)` unique index is the auth boundary, so a guessed `jobId`
-from another site returns 404. Set `tools.asyncMaxWaitMs` to
-control how long a single turn will wait on async tool work
-across the whole turn (multiple async tools in one turn share
-the budget).
+from another site returns 404. The route additionally requires
+a non-empty `sessionId` query parameter matching the job's
+`sessionId` - omitting it, or sending one that doesn't match
+the job's stored `sessionId`, returns 404 (intentionally
+indistinguishable from "no such job" so a probing client
+can't tell whether the jobId exists for someone else's
+session). Set `tools.asyncMaxWaitMs` to control how long a
+single turn will wait on async tool work across the whole
+turn (multiple async tools in one turn share the budget).
 
 ## Development
 

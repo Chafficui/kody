@@ -193,16 +193,19 @@ export class ToolExecutor {
         body: JSON.stringify({ tool: tool.name, arguments: args }),
         signal: controller.signal,
         // undici's default redirect behavior is 'follow', which
-        // will chase any number of 3xx hops up to the fetch
-        // implementation's internal limit (20 in current undici).
-        // We accept this for the async-tool dispatch because the
-        // endpoint URL is operator-configured (not attacker-
-        // controlled) and the response is parsed as JSON for a
-        // jobId, not consumed as the request body. If the response
-        // contains a pollUrl, isAllowedPollUrl re-validates its
-        // origin against the endpoint origin, so a redirect chain
-        // cannot pivot the polling to a different host.
-        redirect: "follow",
+        // would chase any 3xx up to the implementation's
+        // internal limit (20 in current undici) and present the
+        // final hop's response as if it had come from the
+        // endpoint URL. For the async-tool dispatch we want to
+        // *reject* redirects before the response is validated:
+        // a misconfigured endpoint that 302s to a third party
+        // should fail loudly, not silently pivot the server to
+        // an attacker-controlled host. The `pollUrl` re-origin
+        // check below still guards the polling hop, but that
+        // guard assumes the initial response came from the
+        // configured endpoint - 'error' enforces that invariant
+        // at dispatch time.
+        redirect: "error",
       });
 
       if (response.status === 202) {

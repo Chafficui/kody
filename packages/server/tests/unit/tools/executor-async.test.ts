@@ -237,6 +237,26 @@ describe("ToolExecutor — async dispatch", () => {
     // Without a store the dispatch still works; we just don't persist.
     expect(store.list({ siteId: "site-async" })).toHaveLength(0);
   });
+
+  it("passes redirect: 'error' to fetch so 3xx pivots are rejected at dispatch", async () => {
+    // The previous implementation followed redirects (undici's
+    // default), which would silently chase a 302 to a third
+    // party before validating the response. The dispatch path
+    // is now explicit: a 3xx must surface as a fetch rejection,
+    // not as a fake 200/202 from the redirect target.
+    vi.mocked(fetch).mockResolvedValueOnce({
+      status: 202,
+      ok: true,
+      headers: new Headers(),
+      text: () => Promise.resolve(JSON.stringify({ jobId: "job-redir" })),
+    } as unknown as Response);
+
+    const config = makeConfig();
+    await executor.execute(makeCall("build_report"), config);
+
+    const call = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
+    expect(call.redirect).toBe("error");
+  });
 });
 
 describe("ToolJobStore", () => {
