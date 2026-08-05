@@ -61,6 +61,41 @@ export class ConversationStore {
   }
 
   /**
+   * Insert a message at the **beginning** of the conversation
+   * history, ahead of any existing system / user / assistant
+   * turns. Used by the chat route's missing-system-message
+   * fallback: a legacy conversation may already have user and
+   * assistant turns stored without a leading system message,
+   * and the recovered system prompt must precede them so the
+   * model still sees it first. `addMessage` would silently
+   * append to the tail — a hard ordering bug because the
+   * recovered system prompt would be the *last* thing the
+   * model reads instead of the first.
+   *
+   * The same `MAX_MESSAGES` cap as `addMessage` applies; the
+   * prepended message is treated as a non-system message for
+   * the trim, so a conversation that has already grown past
+   * the cap will keep its most recent user/assistant turns
+   * and the prepended system message is preserved (the cap
+   * already special-cases system messages to never be
+   * trimmed).
+   */
+  prependMessage(sessionId: string, message: ChatMessage): void {
+    const conversation = this.conversations.get(sessionId);
+    if (!conversation) return;
+
+    conversation.messages.unshift(message);
+    conversation.lastActivity = Date.now();
+
+    if (conversation.messages.length > MAX_MESSAGES) {
+      const systemMessages = conversation.messages.filter((m) => m.role === "system");
+      const nonSystemMessages = conversation.messages.filter((m) => m.role !== "system");
+      const trimmed = nonSystemMessages.slice(-MAX_MESSAGES + systemMessages.length);
+      conversation.messages = [...systemMessages, ...trimmed];
+    }
+  }
+
+  /**
    * Returns true if a conversation exists for the supplied sessionId.
    * Used by the chat route to distinguish "expired conversation"
    * (re-derive a new one) from "still-alive conversation that just

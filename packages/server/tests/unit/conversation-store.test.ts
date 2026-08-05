@@ -80,4 +80,32 @@ describe("ConversationStore", () => {
     expect(messages.length).toBeLessThanOrEqual(50);
     expect(messages[0]!.role).toBe("system");
   });
+
+  it("prependMessage inserts at the head of the transcript", () => {
+    // The chat route's missing-system-message fallback uses
+    // prependMessage to recover a system prompt ahead of any
+    // existing user / assistant turns left behind by a legacy
+    // upgrade. Appending the recovered prompt would silently
+    // re-order the model input — the recovered system prompt
+    // would become the *last* message the model reads, not
+    // the first.
+    store = new ConversationStore();
+    const conv = store.getOrCreate("site-1");
+    store.addMessage(conv.sessionId, { role: "user", content: "hi" });
+    store.addMessage(conv.sessionId, { role: "assistant", content: "hello" });
+
+    store.prependMessage(conv.sessionId, { role: "system", content: "you are a bot" });
+
+    const messages = store.getMessages(conv.sessionId);
+    expect(messages.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+    expect(messages[0]!.content).toBe("you are a bot");
+  });
+
+  it("prependMessage is a no-op for an unknown sessionId", () => {
+    store = new ConversationStore();
+    // Should not throw and should not create a conversation.
+    store.prependMessage("does-not-exist", { role: "system", content: "x" });
+    expect(store.getMessages("does-not-exist")).toEqual([]);
+    expect(store.has("does-not-exist")).toBe(false);
+  });
 });

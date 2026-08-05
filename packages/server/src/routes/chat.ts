@@ -8,6 +8,7 @@ import { buildSystemPrompt } from "../services/guardrails/system-prompt.js";
 import { scrubOutput } from "../services/guardrails/output-scrubber.js";
 import { streamChatCompletion } from "../services/ai-provider.js";
 import { createKnowledgeAssembler } from "../services/knowledge/index.js";
+import type { KnowledgeAssembler } from "../services/knowledge/index.js";
 import type { UrlFetcher } from "../services/knowledge/url-fetcher.js";
 import { createEmbeddingService } from "../services/knowledge/embedding.js";
 import { KnowledgeRetriever } from "../services/knowledge/retriever.js";
@@ -231,50 +232,13 @@ export function createChatRouter(
     // resolved prompt in a single variable so the response-cache
     // fingerprint (see `buildSiteFingerprint`) can hash the same
     // string the AI actually saw, regardless of which turn we are.
-    let systemPrompt: string;
-    if (conversation.messages.length === 0) {
-      const enrichedSources = await knowledgeAssembler.assemble(
-        config.knowledge.sources,
-        config.knowledge.maxContextTokens,
-      );
-      systemPrompt = buildSystemPrompt({
-        branding: {
-          name: config.branding.name,
-          tagline: config.branding.tagline,
-        },
-        guardrails: config.guardrails,
-        personality: config.personality,
-        knowledge: { sources: enrichedSources },
-        systemPromptPrefix: config.ai.systemPromptPrefix,
-      });
-      conversationStore.addMessage(initialSessionId, { role: "system", content: systemPrompt });
-    } else {
-      // The first message in an existing conversation is the system
-      // prompt that was written on turn one. If the conversation
-      // somehow has no system message (e.g. an upgrade that left
-      // legacy state behind), fall back to a freshly-built one so
-      // the cache fingerprint is never undefined.
-      const existingSystem = conversation.messages.find((m) => m.role === "system");
-      if (existingSystem) {
-        systemPrompt = existingSystem.content;
-      } else {
-        const enrichedSources = await knowledgeAssembler.assemble(
-          config.knowledge.sources,
-          config.knowledge.maxContextTokens,
-        );
-        systemPrompt = buildSystemPrompt({
-          branding: {
-            name: config.branding.name,
-            tagline: config.branding.tagline,
-          },
-          guardrails: config.guardrails,
-          personality: config.personality,
-          knowledge: { sources: enrichedSources },
-          systemPromptPrefix: config.ai.systemPromptPrefix,
-        });
-        conversationStore.addMessage(initialSessionId, { role: "system", content: systemPrompt });
-      }
-    }
+    const systemPrompt = await buildAndStoreSystemPrompt(
+      conversation,
+      initialSessionId,
+      config,
+      knowledgeAssembler,
+      conversationStore,
+    );
 
     conversationStore.addMessage(initialSessionId, { role: "user", content: message });
 
@@ -916,4 +880,140 @@ function persistCacheEntry(params: {
   const scrubbedForCache = scrubOutput(params.content, params.scrubberConfig);
   const toCache = scrubbedForCache.blocked ? params.refusalMessage : scrubbedForCache.content;
   params.responseCache.set(params.cacheKeyInput, params.siteCache, toCache);
+}
+
+/**
+ * Resolve the system prompt for the current turn and ensure
+ * it is recorded in the conversation history so subsequent
+ * turns (and the response-cache fingerprint) see the same
+ * string the AI will be given.
+ *
+ * Three branches, in order:
+ *
+ *   1. **Empty conversation** (first turn of a new chat).
+ *      Build the prompt from scratch and append it via
+ *      `addMessage`. The list is empty so "append" and
+ *      "prepend" produce identical results.
+ *
+ *   2. **Existing system message**. The prompt was written
+ *      on turn one and lives at the head of the transcript.
+ *      Reuse its content verbatim so the response-cache
+ *      fingerprint stays stable across turns and a config
+ *      change that would rebuild the prompt is correctly
+ *      reflected in the next turn (we always re-check on
+ *      the *next* request, not the current one — see
+ *      `buildSiteFingerprint`).
+ *
+ *   3. **Legacy / upgrade fallback**. The conversation has
+ *      user or assistant turns but no system message —
+ *      typically a deployment that upgraded the schema and
+ *      left pre-existing state behind. Build a fresh prompt
+ *      and **prepend** it via `prependMessage` so the
+ *      recovered system prompt sits at the head of the
+ *      history, ahead of the legacy turns. Appending would
+ *      put the recovered prompt at the tail, which the
+ *      model would then read *last* instead of *first* —
+ *      a silent ordering bug.
+ *
+ * The returned `systemPrompt` is the string the AI will be
+ * asked to obey on this turn, regardless of which branch
+ * served it.
+ */
+async function buildAndStoreSystemPrompt(
+  conversation: { messages: Array<{ role: string; content: string }> },
+  sessionId: string,
+  config: SiteConfig,
+  knowledgeAssembler: KnowledgeAssembler,
+  conversationStore: ConversationStore,
+): Promise<string> {
+  // Branch 1: brand-new conversation.
+  if (conversation.messages.length === 0) {
+    return await buildAndAppendSystemPrompt(
+      sessionId,
+      config,
+      knowledgeAssembler,
+      conversationStore,
+    );
+  }
+
+  // Branch 2: existing system message — reuse verbatim so the
+  // response-cache fingerprint stays stable.
+  const existingSystem = conversation.messages.find((m) => m.role === "system");
+  if (existingSystem) {
+    return existingSystem.content;
+  }
+
+  // Branch 3: missing system message — recover and *prepend* so
+  // the recovered prompt precedes any existing user / assistant
+  // turns (see the helper-level docstring above).
+  return await buildAndPrependSystemPrompt(
+    sessionId,
+    config,
+    knowledgeAssembler,
+    conversationStore,
+  );
+}
+
+/**
+ * Build a fresh system prompt from the current site config and
+ * append it to an empty conversation. Shared between the
+ * brand-new branch of `buildAndStoreSystemPrompt` and as a
+ * convenience for any future caller that wants to seed a
+ * conversation with a system prompt without prepending.
+ */
+async function buildAndAppendSystemPrompt(
+  sessionId: string,
+  config: SiteConfig,
+  knowledgeAssembler: KnowledgeAssembler,
+  conversationStore: ConversationStore,
+): Promise<string> {
+  const enrichedSources = await knowledgeAssembler.assemble(
+    config.knowledge.sources,
+    config.knowledge.maxContextTokens,
+  );
+  const systemPrompt = buildSystemPrompt({
+    branding: {
+      name: config.branding.name,
+      tagline: config.branding.tagline,
+    },
+    guardrails: config.guardrails,
+    personality: config.personality,
+    knowledge: { sources: enrichedSources },
+    systemPromptPrefix: config.ai.systemPromptPrefix,
+  });
+  conversationStore.addMessage(sessionId, { role: "system", content: systemPrompt });
+  return systemPrompt;
+}
+
+/**
+ * Build a fresh system prompt and **prepend** it ahead of any
+ * existing user / assistant turns in the conversation
+ * history. Used by the missing-system-message fallback in
+ * `buildAndStoreSystemPrompt` so a recovered prompt always
+ * sits at the head of the transcript — the model will see it
+ * first regardless of which turn the conversation was on when
+ * the recovery happened.
+ */
+async function buildAndPrependSystemPrompt(
+  sessionId: string,
+  config: SiteConfig,
+  knowledgeAssembler: KnowledgeAssembler,
+  conversationStore: ConversationStore,
+): Promise<string> {
+  const enrichedSources = await knowledgeAssembler.assemble(
+    config.knowledge.sources,
+    config.knowledge.maxContextTokens,
+  );
+  const systemPrompt = buildSystemPrompt({
+    branding: {
+      name: config.branding.name,
+      tagline: config.branding.tagline,
+    },
+    guardrails: config.guardrails,
+    personality: config.personality,
+    knowledge: { sources: enrichedSources },
+    systemPromptPrefix: config.ai.systemPromptPrefix,
+  });
+  conversationStore.prependMessage(sessionId, { role: "system", content: systemPrompt });
+  return systemPrompt;
 }
