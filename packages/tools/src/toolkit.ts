@@ -114,7 +114,11 @@ export class Toolkit {
     return this;
   }
 
-  /** Add a tool with a custom alias. The original `tool.definition.function.name` is preserved on the definition. */
+  /**
+   * Add a tool with a custom alias. The tool's `definition.function.name` is
+   * rewritten to the provided alias; the original function name is retained
+   * only on the resulting `ToolkitEntry.originalName` for collision tracking.
+   */
   addAs(alias: string, tool: Tool): this {
     const originalName = tool.definition.function.name;
     this.assertNoCollision(alias, originalName);
