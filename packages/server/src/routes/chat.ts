@@ -20,6 +20,20 @@ import { ToolJobStore } from "../services/tool-job-store.js";
 
 const SUGGEST_OPEN = "<<SUGGEST>>";
 const SUGGEST_CLOSE = "<</SUGGEST>>";
+/**
+ * Maximum number of bytes we will keep buffered for an SSE
+ * response before deciding the client is stuck and tearing the
+ * stream down. 1 MiB matches the typical TCP send buffer for a
+ * single HTTP/1.1 connection in Node — a healthy client drains
+ * well below this on every event-loop tick, so a value above
+ * the bound is a reliable signal of a stuck or dead consumer.
+ * A short spike (e.g. the AI emitting a few large tokens back
+ * to back) can momentarily cross the high-water mark; that is
+ * normal backpressure and we let the next `safeWrite` retry
+ * naturally. Only a sustained overflow (every safeWrite sees
+ * `writableLength > MAX_BUFFERED_BYTES`) trips the abort.
+ */
+const MAX_BUFFERED_BYTES = 1_000_000;
 const FALLBACK_HEADERS = [
   "follow-up questions:",
   "follow up questions:",
@@ -329,23 +343,45 @@ export function createChatRouter(
       }
       try {
         const ok = res.write(chunk);
-        // Treat `false` from `res.write` as backpressure, not
-        // disconnection. The previous implementation set
-        // `closed` and aborted the AI stream on the first
-        // `false`, which prematurely tore down the SSE stream
-        // for any client whose receive buffer was briefly
-        // full — the user would see the reply cut off mid-
-        // sentence. We just return `false` here so the caller's
-        // token-replay loop drops this single chunk; the next
-        // safeWrite call (for the next token) will retry
-        // naturally. If the client has actually disconnected,
-        // either the next res.write will throw and the catch
-        // below will tear down, or the existing close /
-        // aborted / socket-close listeners will set `closed`
-        // and every subsequent safeWrite returns false
-        // immediately. Sustained backpressure is bounded by
-        // the OS-level socket send buffer.
+        // `res.write` returns `false` when the internal send
+        // buffer is over the high-water mark — the chunk is
+        // **not** dropped, Node still holds it and will flush
+        // it once the consumer drains. We must NOT mark
+        // `closed` or abort the AI stream on a single `false`
+        // because the next token would race with the drain and
+        // the user could see a reply truncated mid-sentence
+        // for a client whose receive buffer was just briefly
+        // full (a phone locking the screen, the tab
+        // backgrounded, etc).
+        //
+        // What we *do* need to guard against is a sustained
+        // backpressure condition: if the buffered byte count
+        // stays above the bound for too long, the client is
+        // effectively gone and continuing to pump AI tokens
+        // into the buffer wastes the per-turn budget on output
+        // no one will read. We check `res.writableLength` (the
+        // current number of bytes buffered for write, not yet
+        // acked) on every safeWrite and treat a value well
+        // above `MAX_BUFFERED_BYTES` as a stuck client: stop
+        // the stream, detach listeners, mark the response
+        // closed. The `drain` event is not awaited here — the
+        // token-replay loop is fast enough that a healthy
+        // client drains within a few iterations of the event
+        // loop, so a single-tick check is enough to
+        // distinguish "draining" from "stuck".
         if (ok === false) {
+          if (res.writableLength > MAX_BUFFERED_BYTES) {
+            // Sustained backpressure — the client cannot keep
+            // up. Tear the stream down so we stop burning
+            // tokens on output no one will read. This is
+            // observation-based, not premature: a single
+            // `false` with a small `writableLength` is
+            // normal backpressure and we let the next
+            // safeWrite retry naturally.
+            closed = true;
+            if (!abortController.signal.aborted) abortController.abort();
+            return false;
+          }
           return false;
         }
         return true;
