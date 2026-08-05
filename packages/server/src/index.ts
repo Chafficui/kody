@@ -49,12 +49,11 @@ if (!existing) {
   try {
     // Build the allowed-origin list. Self-hosters set PUBLIC_ORIGIN
     // to their public URL; the localhost ports are always added so
-    // the bundled demo page at GET / works out of the box.
-    const publicOrigins = env.PUBLIC_ORIGIN
-      ? env.PUBLIC_ORIGIN.split(",")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
-      : [];
+    // the bundled demo page at GET / works out of the box. The env
+    // schema already validates each comma-separated entry as a
+    // valid http(s) origin and dedupes them, so we can use the
+    // list directly.
+    const publicOrigins = env.PUBLIC_ORIGIN ?? [];
     app.siteStore.createSite({
       siteId: "demo",
       allowedOrigins: [
