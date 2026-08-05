@@ -101,11 +101,65 @@ Each site has:
 | Section | What it controls |
 |---|---|
 | **Branding** | Name, tagline, logo, colors, position, welcome message |
-| **AI** | Provider URL, API key, model, temperature, max tokens |
+| **AI** | Provider URL, API key, model, temperature, max tokens, opt-in retry policy |
 | **Guardrails** | Allowed topics, refusal message, blocked patterns, prompt injection detection |
 | **Knowledge** | Text snippets, FAQs, URLs, files injected into context |
 | **Tickets** | Jira, GitHub, Linear, email, or webhook for escalation |
+| **Tools** | Custom-tool endpoints, max calls per turn, async poll interval, async per-turn budget |
 | **Rate Limits** | Per-IP messages per minute/hour/day |
+| **Cache** | Opt-in response cache (TTL, capacity) — invalidates immediately on config edits |
+
+### AI retry policy
+
+`ai.retry` is opt-in. When set, the server transparently retries
+transient AI failures (HTTP 429, 5xx, network errors) with
+truncated exponential backoff. `maxAttempts` (1-10, default 3),
+`baseDelayMs` (0-10000, default 200), and `maxDelayMs`
+(0-60000, default 2000) are independently clamped; `maxDelayMs`
+is additionally reconciled to be `>= baseDelayMs`. A
+`Retry-After` header from the provider is honored up to a
+60-second ceiling. Partial-stream failures (a token already
+shipped) are not retried — replaying would duplicate
+already-delivered content.
+
+### Response cache
+
+`cache` is opt-in (default `enabled: false`). When enabled, plain
+text turns (no tool calls) are hashed into a bounded LRU keyed
+by `(siteId, model, temperature, last-4-messages-hash,
+lastUserMessage, siteFingerprint)`. `siteFingerprint` mixes the
+resolved system prompt and the config slices that affect what
+the AI is asked to say, so edits to personality, guardrails,
+knowledge, or `ai.systemPromptPrefix` invalidate prior entries
+immediately — without the fingerprint, a config edit would
+silently keep serving replies generated under the old prompt
+until the TTL elapsed. `ttlSeconds` defaults to 3600, `maxEntries`
+defaults to 1000 and is enforced per-site with a shared pool
+(global LRU eviction across sites).
+
+### Async custom tools
+
+When a custom tool is configured with `endpoint.async: true`,
+the server POSTs the tool call with an `X-Kody-Async: true`
+header and expects either a synchronous reply (any 2xx) or a
+202 with `{ jobId, pollUrl }`. The agent then polls
+`endpoint.asyncPollUrl` (or the response's `pollUrl`, after
+origin validation) every `endpoint.asyncPollIntervalMs` until
+the job reaches a terminal state, the per-turn budget
+(`tools.asyncMaxWaitMs`, default 30s) expires, or the visitor
+aborts. Persisted job rows can be inspected via:
+
+```bash
+curl https://your-server/api/tool-jobs/<jobId> \
+  -H "x-kody-site-id: <siteId>"
+```
+
+The route requires site-scoped authentication: the `(siteId,
+jobId)` unique index is the auth boundary, so a guessed `jobId`
+from another site returns 404. Set `tools.asyncMaxWaitMs` to
+control how long a single turn will wait on async tool work
+across the whole turn (multiple async tools in one turn share
+the budget).
 
 ## Development
 
