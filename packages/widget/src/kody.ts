@@ -138,6 +138,15 @@ export class KodyWidget {
   private destroyed = false;
   private keyboardTeardown: (() => void) | null = null;
   private darkModeListener: ((e: MediaQueryListEvent) => void) | null = null;
+  /**
+   * Teardown callbacks for global listeners installed during
+   * `init()` (page-lifecycle + visualViewport). `destroy()` runs and
+   * clears them so a remount can't keep stale `beforeunload`,
+   * `pagehide`, or viewport-resize handlers — those would otherwise
+   * continue to call into a detached widget and could overwrite
+   * freshly-stored state when the next instance mounts.
+   */
+  private lifecycleTeardowns: Array<() => void> = [];
   private resolvedTheme: "light" | "dark" | "auto" = "light";
   private strings: WidgetStrings = en;
   private locale: string | undefined;
@@ -373,6 +382,12 @@ export class KodyWidget {
     const handler = () => this.saveState();
     window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
+    // Track the teardown so destroy() can detach the same function
+    // reference; removeEventListener relies on identity.
+    this.lifecycleTeardowns.push(() => {
+      window.removeEventListener("beforeunload", handler);
+      window.removeEventListener("pagehide", handler);
+    });
   }
 
   private installKeyboardShortcut(): void {
@@ -386,11 +401,18 @@ export class KodyWidget {
     const windowEl = this.chatWindow.element;
     const isMobile = () => window.innerWidth <= 480;
 
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", () => {
+    const viewport = window.visualViewport;
+    if (viewport) {
+      const onResize = () => {
         if (!isMobile() || !this.isOpen) return;
-        windowEl.style.height = `${window.visualViewport!.height}px`;
+        windowEl.style.height = `${viewport.height}px`;
         this.chatWindow?.scrollToBottom();
+      };
+      viewport.addEventListener("resize", onResize);
+      // Track the teardown so destroy() can detach the same function
+      // reference; removeEventListener relies on identity.
+      this.lifecycleTeardowns.push(() => {
+        viewport.removeEventListener("resize", onResize);
       });
     }
 
@@ -536,6 +558,12 @@ export class KodyWidget {
       this.darkModeQuery = null;
       this.darkModeListener = null;
     }
+    // Detach the page-lifecycle + visualViewport listeners installed
+    // by init(). Each teardown removes the same function reference
+    // we registered, then we clear the list so a remount starts
+    // fresh and a destroyed widget can't keep writing stale state.
+    for (const teardown of this.lifecycleTeardowns) teardown();
+    this.lifecycleTeardowns = [];
     this.emitter.removeAll();
     this.host.remove();
   }
