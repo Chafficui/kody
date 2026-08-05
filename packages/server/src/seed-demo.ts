@@ -119,13 +119,13 @@ Embedding: Add a script tag pointing to your server's /widget.js with data-site-
         {
           type: "text" as const,
           title: "Self-Hosting Guide",
-          content: `Deploy with Docker or bare metal. Requires Node.js 22+, pnpm 9+, and an OpenAI-compatible AI endpoint. Env vars: PORT (default 3456), DATABASE_PATH, ADMIN_EMAIL, ADMIN_PASSWORD, PUBLIC_APP_URL (optional, used by the demo site to allow the deployment's public origin). SQLite database with zero external dependencies. Use nginx as reverse proxy for production.`,
+          content: `Deploy with Docker or bare metal. Requires Node.js 22+, pnpm 9+, and a compatible chat-completion API. Env vars: PORT (default 3456), DATABASE_PATH, ADMIN_EMAIL, ADMIN_PASSWORD, PUBLIC_APP_URL (optional, used by the demo site to allow the deployment's public origin). SQLite database with zero external dependencies. Use nginx as reverse proxy for production.`,
         },
         {
           type: "faq" as const,
           entries: [
             { question: "Is Kody free?", answer: "Yes. 100% open source under MIT license. Self-host at no cost." },
-            { question: "What AI providers work?", answer: "Any OpenAI-compatible API: the operator configures the base URL, API key, and model name in the admin dashboard." },
+            { question: "What AI providers work?", answer: "Any compatible chat-completion API: the operator configures the base URL, API key, and model name in the admin dashboard." },
             { question: "Does it expose AI provider names?", answer: "No. The output scrubber removes all provider and model names automatically." },
             { question: "What's the tech stack?", answer: "TypeScript monorepo: Express 5 + SQLite server, vanilla TS Shadow DOM widget (Vite IIFE), Vite + React admin SPA." },
           ],
@@ -161,13 +161,36 @@ Embedding: Add a script tag pointing to your server's /widget.js with data-site-
  * `true` when a new site was created, `false` when one was
  * already present (or could not be created because the schema
  * rejected the config).
+ *
+ * When the demo site already exists, this also reconciles its
+ * `allowedOrigins` against the current `PUBLIC_APP_URL` so that
+ * an operator who later adds a public-origin env var (e.g.
+ * behind a reverse proxy) gets a working demo origin without
+ * having to hand-edit the database. Existing origins are never
+ * removed — only the new `PUBLIC_APP_URL` origin is appended.
  */
 export function seedDemoSite(siteStore: SiteStore, env: Env): boolean {
-  if (siteStore.getSiteConfig("demo")) return false;
+  const existing = siteStore.getSiteConfig("demo");
+  if (existing) {
+    if (
+      env.PUBLIC_APP_URL &&
+      !existing.allowedOrigins.includes(env.PUBLIC_APP_URL)
+    ) {
+      try {
+        siteStore.updateSite("demo", {
+          allowedOrigins: [...existing.allowedOrigins, env.PUBLIC_APP_URL],
+        });
+      } catch (error) {
+        console.error("Failed to reconcile demo site allowedOrigins:", error);
+      }
+    }
+    return false;
+  }
   try {
     siteStore.createSite(buildDemoSiteConfig(env));
     return true;
-  } catch {
+  } catch (error) {
+    console.error("Failed to seed demo site:", error);
     return false;
   }
 }

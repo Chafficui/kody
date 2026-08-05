@@ -2,7 +2,7 @@ import { createApp } from "./app.js";
 import { loadEnv } from "./env.js";
 import { getDb } from "./db/index.js";
 import { logStore } from "./services/log-store.js";
-import { seedDemoSite } from "./seed-demo.js";
+import { buildDemoSiteConfig, seedDemoSite } from "./seed-demo.js";
 
 logStore.install();
 
@@ -19,11 +19,10 @@ if (env.ADMIN_EMAIL && env.ADMIN_PASSWORD) {
 }
 
 if (seedDemoSite(app.siteStore, env)) {
-  console.log(
-    `Demo site 'demo' created (allowed origins: http://localhost:${env.PORT}` +
-      (env.PUBLIC_APP_URL ? `, ${env.PUBLIC_APP_URL}` : "") +
-      ", and a few common dev ports)",
-  );
+  // Derive the log from the same allowedOrigins the seeder writes, so
+  // the message stays in sync with buildDemoAllowedOrigins and DEV_PORTS.
+  const origins = buildDemoSiteConfig(env).allowedOrigins;
+  console.log(`Demo site 'demo' created (allowed origins: ${origins.join(", ")})`);
 }
 
 app.listen(env.PORT, () => {
