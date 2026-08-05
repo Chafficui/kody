@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import Database from "better-sqlite3";
 import { migrate } from "../../src/db/migrate.js";
@@ -118,6 +118,23 @@ describe("seedDemoSite", () => {
     expect(seedDemoSite(store, env)).toBe(false);
   });
 
+  it("returns false and logs the error when createSite throws", () => {
+    const env = makeEnv();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(store, "createSite").mockImplementation(() => {
+      throw new Error("db write failed");
+    });
+
+    const created = seedDemoSite(store, env);
+
+    expect(created).toBe(false);
+    expect(consoleSpy).toHaveBeenCalled();
+    const firstCallArgs = consoleSpy.mock.calls[0];
+    expect(String(firstCallArgs[0])).toContain("Failed to seed demo site");
+
+    consoleSpy.mockRestore();
+  });
+
   it("exposes a public projection that uses the same demo siteId", async () => {
     const env = makeEnv();
     seedDemoSite(store, env);
@@ -125,5 +142,8 @@ describe("seedDemoSite", () => {
     const res = await request(app).get("/api/config/demo");
     expect(res.status).toBe(200);
     expect(res.body.siteId).toBe("demo");
+    // The public projection must not leak AI provider config
+    // (apiKey / baseUrl / model) to the browser.
+    expect(res.body.ai).toBeUndefined();
   });
 });
