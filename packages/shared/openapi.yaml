@@ -594,32 +594,39 @@ components:
           additionalProperties: false
           default: {}
         ai:
-          baseUrl:
-            type: string
-            format: uri
-          apiKey:
-            type: string
-            description: Redacted; create/update only.
-          model:
-            type: string
-            minLength: 1
-          temperature:
-            type: number
-            minimum: 0
-            maximum: 2
-            default: 0.7
-          maxTokens:
-            type: integer
-            minimum: 1
-            maximum: 32768
-            default: 1024
-          topP:
-            type: number
-            minimum: 0
-            maximum: 1
-          systemPromptPrefix:
-            type: string
-            maxLength: 4000
+          type: object
+          properties:
+            baseUrl:
+              type: string
+              format: uri
+            apiKey:
+              type: string
+              minLength: 1
+              default: ollama
+            model:
+              type: string
+              minLength: 1
+            temperature:
+              type: number
+              minimum: 0
+              maximum: 2
+              default: 0.7
+            maxTokens:
+              type: integer
+              minimum: 1
+              maximum: 32768
+              default: 1024
+            topP:
+              type: number
+              minimum: 0
+              maximum: 1
+            systemPromptPrefix:
+              type: string
+              maxLength: 4000
+          additionalProperties: false
+          required:
+            - baseUrl
+            - model
         guardrails:
           type: object
           properties:
@@ -800,158 +807,163 @@ components:
           additionalProperties: false
           default: {}
         tickets:
-          enabled:
-            type: boolean
-            default: false
-          promptMessage:
-            type: string
-            maxLength: 500
-            default: Would you like me to create a support ticket for this issue?
-          providers:
-            oneOf:
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - jira
-                  baseUrl:
-                    type: string
-                    format: uri
-                  projectKey:
-                    type: string
-                    minLength: 1
-                  apiToken:
-                    type: string
-                    description: Redacted; create/update only.
-                  email:
-                    type: string
-                    format: email
-                  issueType:
-                    type: string
-                    default: Task
-                additionalProperties: false
-                required:
-                  - provider
-                  - baseUrl
-                  - projectKey
-                  - apiToken
-                  - email
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - github
-                  owner:
-                    type: string
-                    minLength: 1
-                  repo:
-                    type: string
-                    minLength: 1
-                  token:
-                    type: string
-                    description: Redacted; create/update only.
-                  labels:
-                    type: array
-                    items:
-                      type: string
-                    default:
-                      - kody-ticket
-                additionalProperties: false
-                required:
-                  - provider
-                  - owner
-                  - repo
-                  - token
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - linear
-                  apiKey:
-                    type: string
-                    description: Redacted; create/update only.
-                  teamId:
-                    type: string
-                    minLength: 1
-                  labelIds:
-                    type: array
-                    items:
-                      type: string
-                    default: []
-                additionalProperties: false
-                required:
-                  - provider
-                  - apiKey
-                  - teamId
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - email
-                  to:
-                    type: string
-                    format: email
-                  from:
-                    type: string
-                    format: email
-                  smtpHost:
-                    type: string
-                  smtpPort:
-                    type: integer
-                  smtpUser:
-                    type: string
-                  smtpPass:
-                    type: string
-                    description: Redacted; create/update only.
-                additionalProperties: false
-                required:
-                  - provider
-                  - to
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - webhook
-                  url:
-                    type: string
-                    format: uri
-                  method:
-                    type: string
-                    enum:
-                      - POST
-                      - PUT
-                    default: POST
-                  headers:
-                    type: object
-                    additionalProperties:
-                      type: string
-                    default: {}
-                  secret:
-                    type: string
-                    description: Redacted; create/update only.
-                additionalProperties: false
-                required:
-                  - provider
-                  - url
-            discriminator:
-              propertyName: provider
-          requiredFields:
-            type: array
-            items:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            promptMessage:
               type: string
-              enum:
-                - name
+              maxLength: 500
+              default: Would you like me to create a support ticket for this issue?
+            providers:
+              type: array
+              items:
+                oneOf:
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - jira
+                      baseUrl:
+                        type: string
+                        format: uri
+                      projectKey:
+                        type: string
+                        minLength: 1
+                      apiToken:
+                        type: string
+                        minLength: 1
+                      email:
+                        type: string
+                        format: email
+                      issueType:
+                        type: string
+                        default: Task
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - baseUrl
+                      - projectKey
+                      - apiToken
+                      - email
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - github
+                      owner:
+                        type: string
+                        minLength: 1
+                      repo:
+                        type: string
+                        minLength: 1
+                      token:
+                        type: string
+                        minLength: 1
+                      labels:
+                        type: array
+                        items:
+                          type: string
+                        default:
+                          - kody-ticket
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - owner
+                      - repo
+                      - token
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - linear
+                      apiKey:
+                        type: string
+                        minLength: 1
+                      teamId:
+                        type: string
+                        minLength: 1
+                      labelIds:
+                        type: array
+                        items:
+                          type: string
+                        default: []
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - apiKey
+                      - teamId
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - email
+                      to:
+                        type: string
+                        format: email
+                      from:
+                        type: string
+                        format: email
+                      smtpHost:
+                        type: string
+                      smtpPort:
+                        type: integer
+                      smtpUser:
+                        type: string
+                      smtpPass:
+                        type: string
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - to
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - webhook
+                      url:
+                        type: string
+                        format: uri
+                      method:
+                        type: string
+                        enum:
+                          - POST
+                          - PUT
+                        default: POST
+                      headers:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        default: {}
+                      secret:
+                        type: string
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - url
+                discriminator:
+                  propertyName: provider
+              default: []
+            requiredFields:
+              type: array
+              items:
+                type: string
+                enum:
+                  - name
+                  - email
+                  - subject
+                  - description
+              default:
                 - email
-                - subject
                 - description
-            default:
-              - email
-              - description
+          additionalProperties: false
+          default: {}
         tools:
           type: object
           properties:
@@ -1246,32 +1258,38 @@ components:
           additionalProperties: false
           default: {}
         ai:
-          baseUrl:
-            type: string
-            format: uri
-          apiKey:
-            type: string
-            description: Redacted; create/update only.
-          model:
-            type: string
-            minLength: 1
-          temperature:
-            type: number
-            minimum: 0
-            maximum: 2
-            default: 0.7
-          maxTokens:
-            type: integer
-            minimum: 1
-            maximum: 32768
-            default: 1024
-          topP:
-            type: number
-            minimum: 0
-            maximum: 1
-          systemPromptPrefix:
-            type: string
-            maxLength: 4000
+          type: object
+          properties:
+            baseUrl:
+              type: string
+              format: uri
+            apiKey:
+              type: string
+              description: Redacted; create/update only.
+            model:
+              type: string
+              minLength: 1
+            temperature:
+              type: number
+              minimum: 0
+              maximum: 2
+              default: 0.7
+            maxTokens:
+              type: integer
+              minimum: 1
+              maximum: 32768
+              default: 1024
+            topP:
+              type: number
+              minimum: 0
+              maximum: 1
+            systemPromptPrefix:
+              type: string
+              maxLength: 4000
+          additionalProperties: false
+          required:
+            - baseUrl
+            - model
         guardrails:
           type: object
           properties:
@@ -1452,158 +1470,165 @@ components:
           additionalProperties: false
           default: {}
         tickets:
-          enabled:
-            type: boolean
-            default: false
-          promptMessage:
-            type: string
-            maxLength: 500
-            default: Would you like me to create a support ticket for this issue?
-          providers:
-            oneOf:
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - jira
-                  baseUrl:
-                    type: string
-                    format: uri
-                  projectKey:
-                    type: string
-                    minLength: 1
-                  apiToken:
-                    type: string
-                    description: Redacted; create/update only.
-                  email:
-                    type: string
-                    format: email
-                  issueType:
-                    type: string
-                    default: Task
-                additionalProperties: false
-                required:
-                  - provider
-                  - baseUrl
-                  - projectKey
-                  - apiToken
-                  - email
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - github
-                  owner:
-                    type: string
-                    minLength: 1
-                  repo:
-                    type: string
-                    minLength: 1
-                  token:
-                    type: string
-                    description: Redacted; create/update only.
-                  labels:
-                    type: array
-                    items:
-                      type: string
-                    default:
-                      - kody-ticket
-                additionalProperties: false
-                required:
-                  - provider
-                  - owner
-                  - repo
-                  - token
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - linear
-                  apiKey:
-                    type: string
-                    description: Redacted; create/update only.
-                  teamId:
-                    type: string
-                    minLength: 1
-                  labelIds:
-                    type: array
-                    items:
-                      type: string
-                    default: []
-                additionalProperties: false
-                required:
-                  - provider
-                  - apiKey
-                  - teamId
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - email
-                  to:
-                    type: string
-                    format: email
-                  from:
-                    type: string
-                    format: email
-                  smtpHost:
-                    type: string
-                  smtpPort:
-                    type: integer
-                  smtpUser:
-                    type: string
-                  smtpPass:
-                    type: string
-                    description: Redacted; create/update only.
-                additionalProperties: false
-                required:
-                  - provider
-                  - to
-              - type: object
-                properties:
-                  provider:
-                    type: string
-                    enum:
-                      - webhook
-                  url:
-                    type: string
-                    format: uri
-                  method:
-                    type: string
-                    enum:
-                      - POST
-                      - PUT
-                    default: POST
-                  headers:
-                    type: object
-                    additionalProperties:
-                      type: string
-                    default: {}
-                  secret:
-                    type: string
-                    description: Redacted; create/update only.
-                additionalProperties: false
-                required:
-                  - provider
-                  - url
-            discriminator:
-              propertyName: provider
-          requiredFields:
-            type: array
-            items:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            promptMessage:
               type: string
-              enum:
-                - name
+              maxLength: 500
+              default: Would you like me to create a support ticket for this issue?
+            providers:
+              type: array
+              items:
+                oneOf:
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - jira
+                      baseUrl:
+                        type: string
+                        format: uri
+                      projectKey:
+                        type: string
+                        minLength: 1
+                      apiToken:
+                        type: string
+                        description: Redacted; create/update only.
+                      email:
+                        type: string
+                        format: email
+                      issueType:
+                        type: string
+                        default: Task
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - baseUrl
+                      - projectKey
+                      - apiToken
+                      - email
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - github
+                      owner:
+                        type: string
+                        minLength: 1
+                      repo:
+                        type: string
+                        minLength: 1
+                      token:
+                        type: string
+                        description: Redacted; create/update only.
+                      labels:
+                        type: array
+                        items:
+                          type: string
+                        default:
+                          - kody-ticket
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - owner
+                      - repo
+                      - token
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - linear
+                      apiKey:
+                        type: string
+                        description: Redacted; create/update only.
+                      teamId:
+                        type: string
+                        minLength: 1
+                      labelIds:
+                        type: array
+                        items:
+                          type: string
+                        default: []
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - apiKey
+                      - teamId
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - email
+                      to:
+                        type: string
+                        format: email
+                      from:
+                        type: string
+                        format: email
+                      smtpHost:
+                        type: string
+                      smtpPort:
+                        type: integer
+                      smtpUser:
+                        type: string
+                      smtpPass:
+                        type: string
+                        description: Redacted; create/update only.
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - to
+                  - type: object
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - webhook
+                      url:
+                        type: string
+                        format: uri
+                      method:
+                        type: string
+                        enum:
+                          - POST
+                          - PUT
+                        default: POST
+                      headers:
+                        type: object
+                        additionalProperties:
+                          type: string
+                        default: {}
+                      secret:
+                        type: string
+                        description: Redacted; create/update only.
+                    additionalProperties: false
+                    required:
+                      - provider
+                      - url
+                discriminator:
+                  propertyName: provider
+              default: []
+            requiredFields:
+              type: array
+              items:
+                type: string
+                enum:
+                  - name
+                  - email
+                  - subject
+                  - description
+              default:
                 - email
-                - subject
                 - description
-            default:
-              - email
-              - description
+          additionalProperties: false
+          default: {}
         tools:
           type: object
           properties:

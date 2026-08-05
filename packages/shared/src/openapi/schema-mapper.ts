@@ -220,12 +220,12 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
     }
 
     case "ZodOptional": {
-      const inner = def.innerType as z.ZodTypeAny;
-      const mapped = zodToOas(inner, ctx);
-      // OpenAPI 3.1 supports type arrays for optionality.
-      const t = mapped.type;
-      if (typeof t === "string") mapped.type = [t, "null"];
-      return mapped;
+      // Optionality is expressed by omission from `required`, not by a
+      // nullable type. Only ZodNullable widens the type below. The ZodObject
+      // branch already strips ZodOptional before mapping, so a property-level
+      // `.optional()` is handled there; this branch exists for top-level or
+      // array-item `.optional()` chains.
+      return zodToOas(def.innerType as z.ZodTypeAny, ctx);
     }
 
     case "ZodNullable": {

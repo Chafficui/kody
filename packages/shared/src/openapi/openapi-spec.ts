@@ -42,12 +42,23 @@ import {
  * (e.g. `apiKey: "***"`) so operators can edit without seeing the value.
  */
 function redactSiteConfigForRead(oas: Record<string, unknown>): Record<string, unknown> {
-  const props = (oas.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
-  const ai = (props.ai?.properties as Record<string, unknown> | undefined) ?? {};
-  const aiRedacted: Record<string, unknown> = { ...ai, apiKey: { type: "string", description: "Redacted; create/update only." } };
-  const tickets = (props.tickets?.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
-  const ticketProviders = (tickets.providers?.items as Record<string, unknown> | undefined) ?? {};
-  const branches = (ticketProviders.oneOf as Array<Record<string, unknown>> | undefined) ?? [];
+  // Deep-clone first so we never mutate the source `out.SiteConfig`. Without
+  // this, the secret-redacted fields would also leak into the unredacted
+  // `SiteConfig` schema that's emitted to the spec.
+  const cloned = structuredClone(oas) as Record<string, unknown>;
+  const props = (cloned.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+  // Replace the secret field in-place so the outer schema (type, required,
+  // additionalProperties) is preserved on `props.ai`.
+  const ai = (props.ai as Record<string, unknown> | undefined) ?? {};
+  const aiProperties = (ai.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+  aiProperties.apiKey = { type: "string", description: "Redacted; create/update only." };
+  ai.properties = aiProperties;
+  // Redact the secrets inside each TicketProvider branch.
+  const tickets = (props.tickets as Record<string, unknown> | undefined) ?? {};
+  const ticketsProperties = (tickets.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const ticketProviders = (ticketsProperties.providers as Record<string, unknown> | undefined) ?? {};
+  const ticketProviderItems = (ticketProviders.items as Record<string, unknown> | undefined) ?? {};
+  const branches = (ticketProviderItems.oneOf as Array<Record<string, unknown>> | undefined) ?? [];
   const redactedBranches = branches.map((branch) => {
     const branchProps = (branch.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
     const providerEnum = ((branchProps.provider as { enum?: string[] } | undefined)?.enum ?? []) as string[];
@@ -70,12 +81,12 @@ function redactSiteConfigForRead(oas: Record<string, unknown>): Record<string, u
     return branch;
   });
   if (redactedBranches.length > 0) {
-    ticketProviders.oneOf = redactedBranches;
+    ticketProviderItems.oneOf = redactedBranches;
   }
-  tickets.providers = ticketProviders;
-  props.tickets = { ...tickets };
-  props.ai = { ...aiRedacted };
-  return { ...oas, properties: props };
+  ticketProviders.items = ticketProviderItems;
+  ticketsProperties.providers = ticketProviders;
+  tickets.properties = ticketsProperties;
+  return cloned;
 }
 
 /** Build the `components.schemas` block by mapping each Zod validator. */
