@@ -148,30 +148,30 @@ describe("OpenAPI generator", () => {
     }
   });
 
-  it("does not list ZodDefault fields as required", () => {
+  it("ToolsConfig has no required fields (all are .default() or .optional())", () => {
+    // Every property on toolsSchema either has a Zod default or is optional,
+    // so the outer `required` array should be absent or empty.
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
     };
-    // brandingSchema has most fields defaulted. None of them should appear
-    // in `required` even though the inner `colors` sub-object is not optional.
-    const branding = spec.components.schemas.brandingSchema as Record<string, unknown> | undefined;
-    // branding is mapped under the name it was registered with, not the
-    // variable name. The buildComponents() function names it `brandingSchema`.
-    // (The map is "schema name -> object", and we registered under `BrandingConfig`.)
-    // Either name works depending on registration; check the *content* rather
-    // than the key.
-    void branding;
-    const tickets = spec.components.schemas.TicketsConfig as Record<string, unknown> | undefined;
-    // The TicketsConfig object has lots of .default() fields; the outer
-    // object's required[] should be empty (every field is either defaulted
-    // or optional).
-    const required = (tickets?.required as string[] | undefined) ?? [];
-    // If required is present, none of its entries may be a ZodDefault
-    // property. We don't have a full registry here, so just check that
-    // common-default fields are not in required.
-    for (const defaulted of ["enabled", "promptMessage", "providers", "requiredFields"]) {
-      expect(required, `${defaulted} has a .default() and must not be required`).not.toContain(defaulted);
-    }
+    const tools = spec.components.schemas.ToolsConfig;
+    expect(tools).toBeDefined();
+    const required = (tools.required as string[] | undefined) ?? [];
+    expect(required).toEqual([]);
+  });
+
+  it("SiteConfig requires exactly the four non-defaulted top-level fields", () => {
+    // siteId, allowedOrigins, ai, guardrails are the only SiteConfig fields
+    // without a Zod default. Everything else (branding, knowledge, tickets,
+    // tools, rateLimit, personality, compliance, conversationStarters,
+    // enabled) is either defaulted or wrapped in .default().
+    const spec = buildOpenApiSpec() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const siteConfig = spec.components.schemas.SiteConfig;
+    expect(siteConfig).toBeDefined();
+    const required = (siteConfig.required as string[] | undefined) ?? [];
+    expect(required).toEqual(["siteId", "allowedOrigins", "ai", "guardrails"]);
   });
 
   it("documents bearer + cookie auth under components.securitySchemes", () => {
