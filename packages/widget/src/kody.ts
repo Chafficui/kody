@@ -129,6 +129,13 @@ export class KodyWidget {
   private sidebarOpen = false;
   private focusTrapTeardown: (() => void) | null = null;
   private openTransitionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Stored reference to the open-transition `onEnd` listener so it
+   *  can be removed if `close()` / `destroy()` race with the open
+   *  transition. `removeEventListener` needs the same function ref. */
+  private openTransitionEnd: (() => void) | null = null;
+  /** Set by `destroy()` so `init()` can short-circuit after a delayed
+   *  `fetchConfig()` resolves on a host that has already been torn down. */
+  private destroyed = false;
   private keyboardTeardown: (() => void) | null = null;
   private darkModeListener: ((e: MediaQueryListEvent) => void) | null = null;
   private resolvedTheme: "light" | "dark" | "auto" = "light";
@@ -170,6 +177,15 @@ export class KodyWidget {
     } catch (err) {
       console.error("[Kody] Failed to fetch config", err);
       this.emitter.emit({ type: "error", message: (err as Error).message });
+      this.readyResolve();
+      return;
+    }
+
+    // destroy() may have been called while fetchConfig() was in
+    // flight. The host is already detached; installing DOM, media-
+    // query, and keyboard listeners here would leak with no teardown
+    // path. `ready` was resolved in destroy(), so just bail.
+    if (this.destroyed) {
       this.readyResolve();
       return;
     }
@@ -430,10 +446,18 @@ export class KodyWidget {
       });
     };
     const onEnd = () => {
+      // If the widget was closed while the opening transition was
+      // still running, the close transition will fire its own
+      // `transitionend`. Ignore the stale open listener so we don't
+      // run scrollToBottom / installTrap on a closing dialog — focus
+      // could otherwise get trapped inside a hidden element.
+      if (!this.isOpen) return;
       win.element.removeEventListener("transitionend", onEnd);
+      this.openTransitionEnd = null;
       win.scrollToBottom();
       installTrap();
     };
+    this.openTransitionEnd = onEnd;
     win.element.addEventListener("transitionend", onEnd, { once: true });
     // Fallback in case the transitionend event never fires (e.g. reduced motion).
     // Track the timer so close() can cancel a stale one from a prior open cycle.
@@ -453,6 +477,14 @@ export class KodyWidget {
     if (this.openTransitionTimer) {
       clearTimeout(this.openTransitionTimer);
       this.openTransitionTimer = null;
+    }
+    // The opening-transition listener might still be pending. Detach
+    // it with the same function reference we stored, so the close
+    // transition's `transitionend` doesn't re-run scrollToBottom /
+    // installTrap on a closed window.
+    if (this.openTransitionEnd) {
+      this.chatWindow.element.removeEventListener("transitionend", this.openTransitionEnd);
+      this.openTransitionEnd = null;
     }
     if (this.focusTrapTeardown) {
       this.focusTrapTeardown();
@@ -474,12 +506,22 @@ export class KodyWidget {
   }
 
   destroy(): void {
+    // Mark destroyed FIRST so an `init()` continuation (e.g. a
+    // pending `fetchConfig()` resolving) can short-circuit and not
+    // install listeners on the host we're about to detach.
+    // Also resolve `ready` so callers awaiting it don't hang.
+    this.destroyed = true;
+    this.readyResolve();
     this.saveState();
     this.abortController?.abort();
     this.stopAttention?.();
     if (this.openTransitionTimer) {
       clearTimeout(this.openTransitionTimer);
       this.openTransitionTimer = null;
+    }
+    if (this.openTransitionEnd && this.chatWindow) {
+      this.chatWindow.element.removeEventListener("transitionend", this.openTransitionEnd);
+      this.openTransitionEnd = null;
     }
     if (this.focusTrapTeardown) {
       this.focusTrapTeardown();
