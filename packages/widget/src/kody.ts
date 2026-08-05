@@ -561,6 +561,14 @@ export class KodyWidget {
     if (!text || typeof text !== "string") {
       return Promise.reject(new Error("[Kody] sendMessage requires a non-empty string"));
     }
+    if (this.isStreaming) {
+      // Programmatic send during streaming was previously a silent
+      // no-op: handleSend() returns immediately when isStreaming, but
+      // sendMessage() still resolved. Surface a clear rejection so
+      // host-page callers can wait for the current response instead
+      // of believing their message was sent.
+      return Promise.reject(new Error("[Kody] A response is already in flight; await it before sending again"));
+    }
     if (!this.isOpen) {
       this.open();
     }
