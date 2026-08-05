@@ -19,6 +19,17 @@ export interface CacheKeyInput {
   lastUserMessage: string;
   /** Hash of the last 4 messages; the caller computes this. */
   last4MessagesHash: string;
+  /**
+   * Opaque fingerprint of the site configuration that produced
+   * the cached reply. The caller (chat route) computes a stable
+   * hash of the resolved system prompt plus the scrubbing /
+   * refusal config so any change to personality, guardrails,
+   * knowledge, or `ai.systemPromptPrefix` immediately invalidates
+   * prior entries. Without this, a config update would silently
+   * keep serving replies that were generated under the old
+   * prompt until the TTL elapsed.
+   */
+  siteFingerprint: string;
 }
 
 interface InternalEntry {
@@ -39,14 +50,28 @@ interface LruNode {
 }
 
 /**
+ * Deployment-wide fallback for the fields a site may leave
+ * unset on its own `cache` config. The per-site `enabled` flag
+ * is intentionally absent — the constructor does not consult
+ * it; callers pass the current site's full `config.cache` into
+ * `isEnabled` / `get` / `set` so a single shared instance can
+ * serve many sites, some with caching on and some off.
+ */
+export type ResponseCacheStorageConfig = {
+  ttlSeconds?: number;
+  maxEntries?: number;
+};
+
+/**
  * Bounded LRU response cache.
  *
  * Keys are derived from a hash of the request shape (see `buildKey`)
  * so we don't keep the original prompt in memory. Entries are stored
- * in a single global pool with a hard cap (`config.maxEntries`),
- * which is fairer than a per-site cap when a chatty site could
- * otherwise evict entries from a quiet one — and it's also what
- * `maxEntries` advertises.
+ * in a single global pool with a hard cap (per-site
+ * `config.maxEntries` with the deployment-wide
+ * `storageConfig.maxEntries` as fallback), which is fairer than a
+ * per-site cap when a chatty site could otherwise evict entries
+ * from a quiet one — and it's also what `maxEntries` advertises.
  *
  * Behaviour:
  *   - `get` refreshes recency by moving the node to the head of the LRU list
@@ -72,7 +97,7 @@ export class ResponseCache {
    * so a single shared instance can serve many sites, some
    * with caching on and some off.
    */
-  constructor(private storageConfig: ResponseCacheConfig) {}
+  constructor(private storageConfig: ResponseCacheStorageConfig) {}
 
   /**
    * Returns true if the cache is enabled for the supplied site
@@ -260,6 +285,8 @@ export function buildKey(input: CacheKeyInput): string {
     .update(input.last4MessagesHash)
     .update("\u0000")
     .update(input.lastUserMessage)
+    .update("\u0000")
+    .update(input.siteFingerprint)
     .digest("hex");
 }
 

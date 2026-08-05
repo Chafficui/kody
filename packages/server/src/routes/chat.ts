@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Router, type Router as RouterType } from "express";
 import type Database from "better-sqlite3";
 import { chatRequestSchema, type SiteConfig } from "@kody/shared";
@@ -13,7 +14,7 @@ import { KnowledgeRetriever } from "../services/knowledge/retriever.js";
 import { ToolExecutor } from "../services/tools/executor.js";
 import { runAgent } from "../services/agent.js";
 import { probeCapabilities } from "../services/capability-probe.js";
-import { ResponseCache, hashMessageTail, isCacheable } from "../services/response-cache.js";
+import { ResponseCache, hashMessageTail, isCacheable, type CacheKeyInput, type CacheEntry } from "../services/response-cache.js";
 import { ToolJobStore } from "../services/tool-job-store.js";
 
 const SUGGEST_OPEN = "<<SUGGEST>>";
@@ -136,8 +137,15 @@ function generateTopicSuggestions(
  * the captured `initialSessionId` is now stale.
  *
  * If the original conversation has expired, a fresh one is created
- * with the same `requestSessionId` (so the widget's session handle
- * keeps working) and the assistant message is written there.
+ * and the assistant message is written there. We seed the new
+ * session with the `session` event id we already shipped to the
+ * client (the `initialSessionId`), not with the
+ * request-supplied `sessionId` — the request-supplied value may
+ * be undefined on the very first turn, in which case the
+ * previous implementation would mint a fresh random id and the
+ * client's session handle would silently break. Recreating under
+ * `initialSessionId ?? requestSessionId` keeps the widget's
+ * handle valid either way.
  */
 function resolveSessionIdForWrite(
   conversationStore: ConversationStore,
@@ -153,8 +161,12 @@ function resolveSessionIdForWrite(
     return initialSessionId;
   }
   // Fallback: original conversation expired. Re-derive (or create)
-  // a fresh one keyed by the request-supplied sessionId.
-  return conversationStore.getOrCreate(configSiteId, requestSessionId).sessionId;
+  // a fresh one keyed by the sessionId we already reported to the
+  // client, so its session handle keeps resolving.
+  return conversationStore.getOrCreate(
+    configSiteId,
+    requestSessionId ?? initialSessionId,
+  ).sessionId;
 }
 
 export function createChatRouter(
@@ -213,12 +225,19 @@ export function createChatRouter(
     const conversation = conversationStore.getOrCreate(config.siteId, requestSessionId);
     const initialSessionId = conversation.sessionId;
 
+    // Build the system prompt on the first turn of a new conversation;
+    // for subsequent turns the existing system message in the
+    // conversation history is the canonical one. We track the
+    // resolved prompt in a single variable so the response-cache
+    // fingerprint (see `buildSiteFingerprint`) can hash the same
+    // string the AI actually saw, regardless of which turn we are.
+    let systemPrompt: string;
     if (conversation.messages.length === 0) {
       const enrichedSources = await knowledgeAssembler.assemble(
         config.knowledge.sources,
         config.knowledge.maxContextTokens,
       );
-      const systemPrompt = buildSystemPrompt({
+      systemPrompt = buildSystemPrompt({
         branding: {
           name: config.branding.name,
           tagline: config.branding.tagline,
@@ -229,6 +248,32 @@ export function createChatRouter(
         systemPromptPrefix: config.ai.systemPromptPrefix,
       });
       conversationStore.addMessage(initialSessionId, { role: "system", content: systemPrompt });
+    } else {
+      // The first message in an existing conversation is the system
+      // prompt that was written on turn one. If the conversation
+      // somehow has no system message (e.g. an upgrade that left
+      // legacy state behind), fall back to a freshly-built one so
+      // the cache fingerprint is never undefined.
+      const existingSystem = conversation.messages.find((m) => m.role === "system");
+      if (existingSystem) {
+        systemPrompt = existingSystem.content;
+      } else {
+        const enrichedSources = await knowledgeAssembler.assemble(
+          config.knowledge.sources,
+          config.knowledge.maxContextTokens,
+        );
+        systemPrompt = buildSystemPrompt({
+          branding: {
+            name: config.branding.name,
+            tagline: config.branding.tagline,
+          },
+          guardrails: config.guardrails,
+          personality: config.personality,
+          knowledge: { sources: enrichedSources },
+          systemPromptPrefix: config.ai.systemPromptPrefix,
+        });
+        conversationStore.addMessage(initialSessionId, { role: "system", content: systemPrompt });
+      }
     }
 
     conversationStore.addMessage(initialSessionId, { role: "user", content: message });
@@ -287,6 +332,26 @@ export function createChatRouter(
     req.on("close", onReqClose);
     req.on("aborted", onReqClose);
     req.socket?.on("close", onReqClose);
+    // All three registrations are detached together via
+    // `detachCloseListeners` on every normal-completion exit path
+    // (see the helpers below) so a stale listener doesn't
+    // accidentally fire after `res.end()`. The previous code only
+    // called `req.off("close", onReqClose)`, which left the
+    // `aborted` and socket-close listeners wired up — harmless in
+    // practice but a latent footgun if any of them ever started
+    // doing real work.
+    const detachCloseListeners = () => {
+      req.off("close", onReqClose);
+      req.off("aborted", onReqClose);
+      req.socket?.off("close", onReqClose);
+    };
+
+    // Site fingerprint: a hash of the resolved system prompt and
+    // the config slices that affect what the AI says. Included in
+    // the response-cache key so a config edit immediately
+    // invalidates prior cache entries. Computed once per request
+    // (the prompt is built / looked up at the top of the handler).
+    const siteFingerprint = buildSiteFingerprint(config, systemPrompt);
 
     const safeWrite = (chunk: string): boolean => {
       if (closed) return false;
@@ -300,14 +365,23 @@ export function createChatRouter(
       }
       try {
         const ok = res.write(chunk);
-        // Honor backpressure: a `false` return from `write` means
-        // the internal buffer is full. Don't let a single slow
-        // client queue unbounded SSE deltas — set `closed` so the
-        // next call skips, and abort the AI stream so the route
-        // tears down promptly.
+        // Treat `false` from `res.write` as backpressure, not
+        // disconnection. The previous implementation set
+        // `closed` and aborted the AI stream on the first
+        // `false`, which prematurely tore down the SSE stream
+        // for any client whose receive buffer was briefly
+        // full — the user would see the reply cut off mid-
+        // sentence. We just return `false` here so the caller's
+        // token-replay loop drops this single chunk; the next
+        // safeWrite call (for the next token) will retry
+        // naturally. If the client has actually disconnected,
+        // either the next res.write will throw and the catch
+        // below will tear down, or the existing close /
+        // aborted / socket-close listeners will set `closed`
+        // and every subsequent safeWrite returns false
+        // immediately. Sustained backpressure is bounded by
+        // the OS-level socket send buffer.
         if (ok === false) {
-          closed = true;
-          if (!abortController.signal.aborted) abortController.abort();
           return false;
         }
         return true;
@@ -382,7 +456,7 @@ export function createChatRouter(
         scrubberConfig,
       });
 
-      req.off("close", onReqClose);
+      detachCloseListeners();
 
       if (!agentStreamError) {
         let suggestions = agentFilter.getSuggestions();
@@ -456,14 +530,16 @@ export function createChatRouter(
       // tool calls in the conversation) so we never replay a stale
       // tool-using reply. The shared `responseCache` instance lives
       // at router scope so a hit from a previous request is
-      // available to this one.
-      const lastUserMessage = message;
-      const cacheKeyInput = {
+      // available to this one. `siteFingerprint` is included in
+      // the key so config edits (personality, guardrails,
+      // systemPromptPrefix) immediately invalidate prior entries.
+      const cacheKeyInput: CacheKeyInput = {
         siteId: config.siteId,
         model: config.ai.model,
         temperature: config.ai.temperature,
-        lastUserMessage,
+        lastUserMessage: message,
         last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+        siteFingerprint,
       };
       const cacheHit =
         responseCache.isEnabled(config.cache) && isCacheable(messages)
@@ -471,49 +547,19 @@ export function createChatRouter(
           : null;
 
       if (cacheHit) {
-        // Scrub the cached reply with the same pipeline that runs
-        // over live deltas. We *also* store only the scrubbed
-        // content (see below) so subsequent hits cannot replay raw
-        // blocked output, but running the scrubber here protects
-        // us against the case where a config change starts
-        // blocking content that was previously allowed.
-        const scrubbedHit = scrubOutput(cacheHit.content, scrubberConfig);
-        if (scrubbedHit.blocked) {
-          // Don't replay blocked content over SSE — surface the
-          // refusal message in the same shape a live stream would.
-          safeWrite(
-            `data: ${JSON.stringify({ type: "cache_hit", contentLength: config.guardrails.refusalMessage.length })}\n\n`,
-          );
-          replayContentAsDeltas(safeWrite, config.guardrails.refusalMessage);
-        } else {
-          safeWrite(
-            `data: ${JSON.stringify({ type: "cache_hit", contentLength: scrubbedHit.content.length })}\n\n`,
-          );
-          replayContentAsDeltas(safeWrite, scrubbedHit.content);
-        }
-
-        const suggestions = generateTopicSuggestions(
-          config.guardrails.allowedTopics,
+        replayCacheHit({
+          safeWrite,
+          safeEnd,
+          cacheHit,
+          scrubberConfig,
+          refusalMessage: config.guardrails.refusalMessage,
+          config,
           message,
-          config.conversationStarters,
-        );
-        if (suggestions.length > 0) {
-          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
-        }
-        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-        safeEnd();
-
-        const writeSessionId = resolveSessionIdForWrite(
           conversationStore,
-          config.siteId,
           requestSessionId,
           initialSessionId,
-        );
-        conversationStore.addMessage(writeSessionId, {
-          role: "assistant",
-          content: scrubbedHit.blocked ? config.guardrails.refusalMessage : scrubbedHit.content,
+          detachCloseListeners,
         });
-        req.off("close", onReqClose);
         return;
       }
 
@@ -548,7 +594,7 @@ export function createChatRouter(
         { signal: abortController.signal },
       );
 
-      req.off("close", onReqClose);
+      detachCloseListeners();
 
       if (!ragStreamError) {
         let suggestions = ragFilter.getSuggestions();
@@ -579,18 +625,20 @@ export function createChatRouter(
         safeEnd();
 
         // Cache the assistant's reply for next time, but only for
-        // turns that are safe to replay (no tool calls, etc.). We
-        // store the *scrubbed* reply so a future hit can't replay
-        // raw blocked output — the live stream has already passed
-        // the reply through `scrubOutput` for storage; the cache
-        // mirrors that policy.
-        if (contentToStore && isCacheable(messages)) {
-          const scrubbedForCache = scrubOutput(contentToStore, scrubberConfig);
-          const toCache = scrubbedForCache.blocked
-            ? config.guardrails.refusalMessage
-            : scrubbedForCache.content;
-          responseCache.set(cacheKeyInput, config.cache, toCache);
-        }
+        // turns that are safe to replay (no tool calls, etc.). The
+        // helper centralizes the scrubbing + isCacheable + set
+        // sequence so the same policy is enforced on every
+        // successful stream — if either path diverges, a future
+        // hit could replay raw blocked content.
+        persistCacheEntry({
+          content: contentToStore,
+          messages,
+          scrubberConfig,
+          refusalMessage: config.guardrails.refusalMessage,
+          cacheKeyInput,
+          siteCache: config.cache,
+          responseCache,
+        });
 
         if (contentToStore) {
           const scrubbed = scrubOutput(contentToStore, scrubberConfig);
@@ -608,13 +656,13 @@ export function createChatRouter(
       }
     } else {
       // Plain (no-tools, no-rag) path: same caching as the RAG path.
-      const lastUserMessage = message;
-      const cacheKeyInput = {
+      const cacheKeyInput: CacheKeyInput = {
         siteId: config.siteId,
         model: config.ai.model,
         temperature: config.ai.temperature,
-        lastUserMessage,
+        lastUserMessage: message,
         last4MessagesHash: hashMessageTail(messages.slice(0, -1)),
+        siteFingerprint,
       };
       const cacheHit =
         responseCache.isEnabled(config.cache) && isCacheable(messages)
@@ -622,41 +670,19 @@ export function createChatRouter(
           : null;
 
       if (cacheHit) {
-        const scrubbedHit = scrubOutput(cacheHit.content, scrubberConfig);
-        if (scrubbedHit.blocked) {
-          safeWrite(
-            `data: ${JSON.stringify({ type: "cache_hit", contentLength: config.guardrails.refusalMessage.length })}\n\n`,
-          );
-          replayContentAsDeltas(safeWrite, config.guardrails.refusalMessage);
-        } else {
-          safeWrite(
-            `data: ${JSON.stringify({ type: "cache_hit", contentLength: scrubbedHit.content.length })}\n\n`,
-          );
-          replayContentAsDeltas(safeWrite, scrubbedHit.content);
-        }
-
-        const suggestions = generateTopicSuggestions(
-          config.guardrails.allowedTopics,
+        replayCacheHit({
+          safeWrite,
+          safeEnd,
+          cacheHit,
+          scrubberConfig,
+          refusalMessage: config.guardrails.refusalMessage,
+          config,
           message,
-          config.conversationStarters,
-        );
-        if (suggestions.length > 0) {
-          safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
-        }
-        safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-        safeEnd();
-
-        const writeSessionId = resolveSessionIdForWrite(
           conversationStore,
-          config.siteId,
           requestSessionId,
           initialSessionId,
-        );
-        conversationStore.addMessage(writeSessionId, {
-          role: "assistant",
-          content: scrubbedHit.blocked ? config.guardrails.refusalMessage : scrubbedHit.content,
+          detachCloseListeners,
         });
-        req.off("close", onReqClose);
         return;
       }
 
@@ -691,7 +717,7 @@ export function createChatRouter(
         { signal: abortController.signal },
       );
 
-      req.off("close", onReqClose);
+      detachCloseListeners();
 
       if (!streamError) {
         let suggestions = filter.getSuggestions();
@@ -721,13 +747,15 @@ export function createChatRouter(
         safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
         safeEnd();
 
-        if (contentToStore && isCacheable(messages)) {
-          const scrubbedForCache = scrubOutput(contentToStore, scrubberConfig);
-          const toCache = scrubbedForCache.blocked
-            ? config.guardrails.refusalMessage
-            : scrubbedForCache.content;
-          responseCache.set(cacheKeyInput, config.cache, toCache);
-        }
+        persistCacheEntry({
+          content: contentToStore,
+          messages,
+          scrubberConfig,
+          refusalMessage: config.guardrails.refusalMessage,
+          cacheKeyInput,
+          siteCache: config.cache,
+          responseCache,
+        });
 
         if (contentToStore) {
           const scrubbed = scrubOutput(contentToStore, scrubberConfig);
@@ -763,4 +791,129 @@ function replayContentAsDeltas(write: (chunk: string) => boolean, content: strin
     const slice = content.slice(i, i + chunkSize);
     write(`data: ${JSON.stringify({ type: "delta", content: slice })}\n\n`);
   }
+}
+
+type ScrubberConfig = {
+  assistantName: string;
+  enableOutputScrubbing: boolean;
+  blockedOutputPatterns: string[];
+  systemPromptFragments: string[];
+};
+
+/**
+ * Build the site-fingerprint half of the response-cache key. The
+ * fingerprint hashes the resolved system prompt plus the parts
+ * of the site config that affect what the AI is asked to say
+ * (or what we let the AI say through the scrubber). Any change
+ * to personality, guardrails, knowledge sources, or
+ * `ai.systemPromptPrefix` flips the fingerprint and invalidates
+ * prior cache entries immediately — without it, a config edit
+ * would silently keep serving replies generated under the old
+ * prompt until the TTL elapsed.
+ */
+function buildSiteFingerprint(config: SiteConfig, systemPrompt: string): string {
+  const h = createHash("sha256");
+  h.update(systemPrompt);
+  h.update("\u0000");
+  h.update(config.guardrails.refusalMessage);
+  h.update("\u0000");
+  h.update(config.guardrails.blockedOutputPatterns.join("\u0001"));
+  h.update("\u0000");
+  h.update(String(config.guardrails.enableOutputScrubbing));
+  h.update("\u0000");
+  h.update(JSON.stringify(config.personality));
+  h.update("\u0000");
+  h.update(config.ai.systemPromptPrefix ?? "");
+  h.update("\u0000");
+  h.update(String(config.knowledge.sources.length));
+  h.update("\u0000");
+  h.update(JSON.stringify(config.knowledge.rag));
+  return h.digest("hex");
+}
+
+/**
+ * Replay a response-cache hit over SSE. Shared between the RAG
+ * and the plain text paths so the scrubbing + suggestions +
+ * done + assistant-write sequence is byte-identical for every
+ * cache hit. Extracting the helper also guarantees the
+ * scrubbing policy is uniform: any future change to the
+ * hit-replay contract is made in one place.
+ *
+ * The `detachCloseListeners` callback removes the request's
+ * close / aborted / socket-close listeners — every normal
+ * completion path detaches them so a stale listener doesn't
+ * fire after the response has been fully written.
+ */
+function replayCacheHit(params: {
+  safeWrite: (chunk: string) => boolean;
+  safeEnd: () => void;
+  cacheHit: CacheEntry;
+  scrubberConfig: ScrubberConfig;
+  refusalMessage: string;
+  config: SiteConfig;
+  message: string;
+  conversationStore: ConversationStore;
+  requestSessionId: string | undefined;
+  initialSessionId: string;
+  detachCloseListeners: () => void;
+}): void {
+  const scrubbedHit = scrubOutput(params.cacheHit.content, params.scrubberConfig);
+  if (scrubbedHit.blocked) {
+    params.safeWrite(
+      `data: ${JSON.stringify({ type: "cache_hit", contentLength: params.refusalMessage.length })}\n\n`,
+    );
+    replayContentAsDeltas(params.safeWrite, params.refusalMessage);
+  } else {
+    params.safeWrite(
+      `data: ${JSON.stringify({ type: "cache_hit", contentLength: scrubbedHit.content.length })}\n\n`,
+    );
+    replayContentAsDeltas(params.safeWrite, scrubbedHit.content);
+  }
+
+  const suggestions = generateTopicSuggestions(
+    params.config.guardrails.allowedTopics,
+    params.message,
+    params.config.conversationStarters,
+  );
+  if (suggestions.length > 0) {
+    params.safeWrite(`data: ${JSON.stringify({ type: "suggestions", suggestions })}\n\n`);
+  }
+  params.safeWrite(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+  params.safeEnd();
+
+  const writeSessionId = resolveSessionIdForWrite(
+    params.conversationStore,
+    params.config.siteId,
+    params.requestSessionId,
+    params.initialSessionId,
+  );
+  params.conversationStore.addMessage(writeSessionId, {
+    role: "assistant",
+    content: scrubbedHit.blocked ? params.refusalMessage : scrubbedHit.content,
+  });
+  params.detachCloseListeners();
+}
+
+/**
+ * Persist a scrubbed assistant reply to the response cache.
+ * No-op when the turn is uncacheable (tool calls in the
+ * conversation, empty content, etc.) so we never store a
+ * reply that couldn't safely be replayed. Scrubbing is
+ * applied before storage — a config change that newly
+ * blocks previously-allowed content cannot cause a future
+ * hit to replay raw blocked output.
+ */
+function persistCacheEntry(params: {
+  content: string;
+  messages: Array<{ role: string; tool_calls?: unknown[]; tool_call_id?: string }>;
+  scrubberConfig: ScrubberConfig;
+  refusalMessage: string;
+  cacheKeyInput: CacheKeyInput;
+  siteCache: { enabled: boolean; ttlSeconds: number; maxEntries: number };
+  responseCache: ResponseCache;
+}): void {
+  if (!params.content || !isCacheable(params.messages)) return;
+  const scrubbedForCache = scrubOutput(params.content, params.scrubberConfig);
+  const toCache = scrubbedForCache.blocked ? params.refusalMessage : scrubbedForCache.content;
+  params.responseCache.set(params.cacheKeyInput, params.siteCache, toCache);
 }

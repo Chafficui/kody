@@ -28,6 +28,7 @@ function sampleInput(overrides: Partial<Parameters<ResponseCache["get"]>[0]> = {
     last4MessagesHash: hashMessageTail([
       { role: "user", content: "previous turn" },
     ]),
+    siteFingerprint: "test-fingerprint",
     ...overrides,
   };
 }
