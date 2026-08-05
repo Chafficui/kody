@@ -143,6 +143,10 @@ export class ToolJobStore {
    * Look up a job by its external id. Job ids are unique only
    * within a site, so callers that know the requesting site should
    * prefer `getForSite` to avoid a cross-site enumeration vector.
+   * Callers that *do not* know the site should also be careful:
+   * the unscoped lookup returns the *first* row matching the
+   * jobId, which on a collision is whichever site happened to
+   * land first in the index — almost certainly a bug.
    */
   get(jobId: string): ToolJob | null {
     const row = this.db
@@ -155,7 +159,8 @@ export class ToolJobStore {
    * Return the job only when it belongs to the supplied site.
    * This is the auth-boundary lookup used by every request
    * handler — the unique index is `(site_id, job_id)`, so
-   * collision across sites is impossible.
+   * collision across sites is impossible. Prefer this over
+   * the unscoped `get` whenever the calling site is known.
    */
   getForSite(jobId: string, siteId: string): ToolJob | null {
     const row = this.db
@@ -165,11 +170,22 @@ export class ToolJobStore {
   }
 
   /**
-   * Apply a partial update to a job row, scoped by site so cross-
-   * site writes are impossible. Returns the updated row or null
-   * when no such (site, job) exists.
+   * Apply a partial update to a job row. `siteId` is **mandatory**:
+   * the SQL is constrained by both `site_id` and `job_id` so a
+   * caller can only ever mutate a row that belongs to its own
+   * site. Returns the updated row, or `null` when no such
+   * (site, job) exists.
+   *
+   * The site-scoped path is the only update path. The previous
+   * implementation also accepted an unscoped update (looking up
+   * the job by `job_id` alone), which would let a caller with a
+   * guessed `jobId` mutate a row owned by a different site — a
+   * cross-site write. Removing the unscoped branch closes that
+   * hole; the `get` method above remains for read-only callers
+   * that genuinely have no site context (currently none — kept
+   * for tests / future use).
    */
-  update(jobId: string, patch: ToolJobUpdate, siteId?: string): ToolJob | null {
+  update(jobId: string, patch: ToolJobUpdate, siteId: string): ToolJob | null {
     const sets: string[] = [];
     const values: Array<string | number | null> = [];
 
@@ -204,16 +220,9 @@ export class ToolJobStore {
       sets.push("last_polled_at = datetime('now')");
     }
     if (sets.length === 0) {
-      return siteId === undefined ? this.get(jobId) : this.getForSite(jobId, siteId);
+      return this.getForSite(jobId, siteId);
     }
 
-    if (siteId === undefined) {
-      values.push(jobId);
-      this.db
-        .prepare(`UPDATE tool_jobs SET ${sets.join(", ")} WHERE job_id = ?`)
-        .run(...values);
-      return this.get(jobId);
-    }
     values.push(siteId, jobId);
     this.db
       .prepare(`UPDATE tool_jobs SET ${sets.join(", ")} WHERE site_id = ? AND job_id = ?`)
@@ -223,7 +232,10 @@ export class ToolJobStore {
 
   /**
    * Drop a job (operator/admin cleanup). Returns the number of rows
-   * deleted.
+   * deleted. Prefer `deleteForSite` whenever the site is known —
+   * the unscoped delete would remove every site that happened to
+   * share a `jobId`, which on the unique index is never more than
+   * one, but the unscoped form is still risky to keep around.
    */
   delete(jobId: string): number {
     const result = this.db.prepare("DELETE FROM tool_jobs WHERE job_id = ?").run(jobId);

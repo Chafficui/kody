@@ -290,7 +290,7 @@ describe("ToolJobStore", () => {
     const updated = store.update(job.jobId, {
       status: "succeeded",
       result: "the result",
-    });
+    }, "site-a");
     expect(updated?.status).toBe("succeeded");
     expect(updated?.result).toBe("the result");
     expect(updated?.completedAt).not.toBeNull();
