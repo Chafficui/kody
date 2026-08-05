@@ -151,13 +151,14 @@ export async function streamChatCompletion(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     attempt++;
-    // Per-attempt state. `consecutiveBad` is reset for each
-    // attempt so a string of malformed chunks in attempt 1
-    // doesn't bias the desync counter for attempt 2. `delivered`
-    // and `fullContent` are reset so a mid-stream retry doesn't
+    // Per-attempt state. `consecutiveBad` and `emittedAnyToken`
+    // are reset for each attempt so a string of malformed chunks
+    // in attempt 1 doesn't bias the desync counter for attempt 2,
+    // and so a partial stream in attempt 1 doesn't suppress a
+    // retry on attempt 2 just because a token leaked through.
+    // `fullContent` is reset so a mid-stream retry doesn't
     // replay already-delivered tokens to the caller.
     let consecutiveBad = 0;
-    let delivered = 0;
 
     const controller = new AbortController();
     const onAbort = () => controller.abort();
@@ -225,12 +226,14 @@ export async function streamChatCompletion(
     let finishReason = "stop";
     const toolCallAccumulator = new Map<number, { id: string; name: string; arguments: string }>();
     let streamError: string | null = null;
-    // Tracks whether the previous attempt's stream had already
-    // emitted at least one token. The retry decision below uses
-    // this so a *partial* mid-stream failure is *not* retried
-    // (replay would duplicate already-delivered tokens); the
-    // caller gets the partial result and `onError` is invoked
-    // synchronously.
+    // Tracks whether *this* attempt's stream has emitted at least
+    // one token. The retry decision below uses this so a *partial*
+    // mid-stream failure is *not* retried (replay would duplicate
+    // already-delivered tokens); the caller gets the partial
+    // result and `onError` is invoked synchronously. Reset for
+    // each attempt above so a partial stream in attempt 1 doesn't
+    // suppress a retry of attempt 2 just because one token
+    // leaked through.
     let emittedAnyToken = false;
 
     try {
@@ -279,8 +282,7 @@ export async function streamChatCompletion(
 
           if (delta?.content) {
             fullContent += delta.content;
-            delivered += delta.content.length;
-            if (!emittedAnyToken && delivered > 0) emittedAnyToken = true;
+            emittedAnyToken = true;
             callbacks.onToken(delta.content);
           }
 
