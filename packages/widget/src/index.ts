@@ -8,6 +8,7 @@
 
 import { KodyWidget, buildPublicAPI, type KodyWidgetConfig, type KodyPublicAPI } from "./kody.js";
 import { parseEmbedConfig } from "./utils/embed-config.js";
+import { isTrustedServerUrl } from "./utils/url.js";
 import { resolveStrings } from "./i18n/en.js";
 
 export {
@@ -60,6 +61,19 @@ function readMountConfig(): KodyWidgetConfig | null {
   }
 
   const serverUrl = resolveServerUrl(validated.serverUrl);
+
+  // Refuse to forward identity / context data to a non-trusted
+  // origin. The IIFE auto-init path bails out so the widget does
+  // not mount on a plain-HTTP page (or any other untrusted origin
+  // the script tag was tricked into pointing at). Local development
+  // via http://localhost remains a supported exception.
+  if (!isTrustedServerUrl(serverUrl)) {
+    console.error(
+      `[Kody] Refusing to mount: serverUrl "${serverUrl}" is not HTTPS or a loopback host. ` +
+        `Use https:// or http://localhost / http://127.0.0.1 for local dev.`,
+    );
+    return null;
+  }
 
   return {
     siteId: validated.siteId,

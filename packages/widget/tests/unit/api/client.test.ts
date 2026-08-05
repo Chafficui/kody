@@ -103,4 +103,98 @@ describe("KodyApiClient", () => {
       });
     });
   });
+
+  describe("identity gating for untrusted origins", () => {
+    it("withholds x-kody-user-id, traits, and context when baseUrl is plain http", async () => {
+      const insecure = new KodyApiClient("http://api.example.com", "site-123");
+      const fetchMock = vi.fn().mockResolvedValue(mockSSEResponse([]));
+      globalThis.fetch = fetchMock;
+
+      insecure.setIdentity({ userId: "u-1", traits: { plan: "pro" } });
+      insecure.setUserContext({ page: "checkout" });
+
+      await insecure.sendMessage("hi", "sess", { onEvent: vi.fn() });
+
+      const chatCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/chat"));
+      const headers = (chatCall![1] as RequestInit).headers as Record<string, string>;
+      // Only the public site id should be present; identity / context
+      // must NOT be forwarded to a plain-HTTP origin.
+      expect(headers["x-kody-site-id"]).toBe("site-123");
+      expect(headers["x-kody-user-id"]).toBeUndefined();
+      expect(headers["x-kody-user-traits"]).toBeUndefined();
+      expect(headers["x-kody-user-context"]).toBeUndefined();
+    });
+
+    it("forwards identity headers to https:// origins", async () => {
+      const secure = new KodyApiClient("https://api.example.com", "site-123");
+      const fetchMock = vi.fn().mockResolvedValue(mockSSEResponse([]));
+      globalThis.fetch = fetchMock;
+
+      secure.setIdentity({ userId: "u-1", traits: { plan: "pro" } });
+      secure.setUserContext({ page: "checkout" });
+
+      await secure.sendMessage("hi", "sess", { onEvent: vi.fn() });
+
+      const chatCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/chat"));
+      const headers = (chatCall![1] as RequestInit).headers as Record<string, string>;
+      expect(headers["x-kody-user-id"]).toBe("u-1");
+      expect(headers["x-kody-user-traits"]).toBe(JSON.stringify({ plan: "pro" }));
+      expect(headers["x-kody-user-context"]).toBe(JSON.stringify({ page: "checkout" }));
+    });
+
+    it("forwards identity headers to http://localhost (loopback dev exception)", async () => {
+      const local = new KodyApiClient("http://localhost:3000", "site-123");
+      const fetchMock = vi.fn().mockResolvedValue(mockSSEResponse([]));
+      globalThis.fetch = fetchMock;
+
+      local.setIdentity({ userId: "u-1" });
+
+      await local.sendMessage("hi", undefined, { onEvent: vi.fn() });
+
+      const chatCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/chat"));
+      const headers = (chatCall![1] as RequestInit).headers as Record<string, string>;
+      expect(headers["x-kody-user-id"]).toBe("u-1");
+    });
+  });
+
+  describe("trySerialize UTF-8 byte sizing", () => {
+    it("drops a multi-byte payload whose UTF-8 size exceeds the cap even when char count would fit", () => {
+      // 4-byte emoji; one char, four UTF-8 bytes. With the prior
+      // string-length check, ~7000 of these would fit in a 4096 char
+      // budget but blow up the header. The byte-aware check should
+      // drop anything past ~1024 emoji.
+      const insecure = new KodyApiClient("https://api.example.com", "site-123");
+      const fetchMock = vi.fn().mockResolvedValue(mockSSEResponse([]));
+      globalThis.fetch = fetchMock;
+
+      // 2000 emoji, each 1 char / 4 UTF-8 bytes: char length 2000 (fits
+      // the old 4096 cap), UTF-8 size 8000 (should be dropped).
+      const manyEmoji = { tag: "🌍".repeat(2000) };
+      insecure.setUserContext(manyEmoji);
+
+      return insecure.sendMessage("hi", undefined, { onEvent: vi.fn() }).then(() => {
+        const chatCall = fetchMock.mock.calls.find(
+          (c) => (c[0] as string).includes("/api/chat"),
+        );
+        const headers = (chatCall![1] as RequestInit).headers as Record<string, string>;
+        expect(headers["x-kody-user-context"]).toBeUndefined();
+      });
+    });
+
+    it("keeps an ASCII payload that fits within the byte cap", () => {
+      const secure = new KodyApiClient("https://api.example.com", "site-123");
+      const fetchMock = vi.fn().mockResolvedValue(mockSSEResponse([]));
+      globalThis.fetch = fetchMock;
+
+      secure.setUserContext({ page: "checkout", cart: 3 });
+
+      return secure.sendMessage("hi", undefined, { onEvent: vi.fn() }).then(() => {
+        const chatCall = fetchMock.mock.calls.find(
+          (c) => (c[0] as string).includes("/api/chat"),
+        );
+        const headers = (chatCall![1] as RequestInit).headers as Record<string, string>;
+        expect(headers["x-kody-user-context"]).toBe(JSON.stringify({ page: "checkout", cart: 3 }));
+      });
+    });
+  });
 });

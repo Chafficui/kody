@@ -55,6 +55,8 @@ export type ChatEvent =
   | { type: "sources"; chunks: Array<{ title: string; url?: string; score: number }> }
   | { type: "suggestions"; suggestions: string[] };
 
+import { isTrustedServerUrl } from "../utils/url.js";
+
 export interface IdentifyTraits {
   userId: string;
   traits?: Record<string, unknown>;
@@ -63,11 +65,20 @@ export interface IdentifyTraits {
 export class KodyApiClient {
   private userContext: Record<string, unknown> | undefined;
   private identity: IdentifyTraits | undefined;
+  /**
+   * True only when `baseUrl` is HTTPS or an explicit loopback host.
+   * Identity / context headers are withheld for any other plain-HTTP
+   * origin so we never leak `x-kody-user-id` etc. to a non-trusted
+   * upstream.
+   */
+  private readonly allowIdentity: boolean;
 
   constructor(
     private baseUrl: string,
     private siteId: string,
-  ) {}
+  ) {
+    this.allowIdentity = isTrustedServerUrl(baseUrl);
+  }
 
   setUserContext(ctx: Record<string, unknown> | undefined): void {
     this.userContext = ctx && Object.keys(ctx).length > 0 ? ctx : undefined;
@@ -90,9 +101,15 @@ export class KodyApiClient {
    * Build the per-message header set: site id + the current identity
    * (user id + traits) and userContext, with a bounded size check so
    * a single misconfigured site can't blow up the request line.
+   *
+   * Identity and context headers are only attached when the resolved
+   * base URL is trusted (HTTPS or an explicit loopback exception).
+   * Otherwise we forward only the public site id — the chat itself
+   * still works, but no user-identifying data leaves the page.
    */
   private buildMessageHeaders(): Record<string, string> {
     const headers: Record<string, string> = this.buildHeaders();
+    if (!this.allowIdentity) return headers;
     if (this.identity) {
       headers["x-kody-user-id"] = this.identity.userId;
       if (this.identity.traits) {
@@ -114,7 +131,12 @@ export class KodyApiClient {
     } catch {
       return undefined;
     }
-    if (raw === undefined || raw.length > maxBytes) return undefined;
+    if (raw === undefined) return undefined;
+    // Measure UTF-8 bytes, not JS string length. The HTTP header has
+    // a byte budget; a non-ASCII character can be 1–4 bytes, so
+    // `raw.length` systematically over-states the size of CJK /
+    // emoji content and would let oversized payloads through.
+    if (new TextEncoder().encode(raw).byteLength > maxBytes) return undefined;
     return raw;
   }
 
