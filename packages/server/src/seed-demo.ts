@@ -168,6 +168,15 @@ Embedding: Add a script tag pointing to your server's /widget.js with data-site-
  * behind a reverse proxy) gets a working demo origin without
  * having to hand-edit the database. Existing origins are never
  * removed — only the new `PUBLIC_APP_URL` origin is appended.
+ *
+ * `SiteStore.getSiteConfig` returns `null` for both "row absent" and
+ * "row present but disabled" (the runtime path filters disabled
+ * sites out so the chat pipeline never serves them). Without
+ * disambiguating those, every server restart for an operator who
+ * disabled the demo would fall through to `createSite`, hit a
+ * UNIQUE constraint, and log a misleading "Failed to seed demo
+ * site" error. Use `hasSiteRecord` to preserve the operator's
+ * disabled state and only reconcile genuinely missing demo sites.
  */
 export function seedDemoSite(siteStore: SiteStore, env: Env): boolean {
   const existing = siteStore.getSiteConfig("demo");
@@ -184,6 +193,13 @@ export function seedDemoSite(siteStore: SiteStore, env: Env): boolean {
         console.error("Failed to reconcile demo site allowedOrigins:", error);
       }
     }
+    return false;
+  }
+  // getSiteConfig is null — either no demo row exists, or the row
+  // exists but is disabled. Reconcile only the genuinely-missing
+  // case; preserve a disabled record so operator intent survives
+  // a restart.
+  if (siteStore.hasSiteRecord("demo")) {
     return false;
   }
   try {

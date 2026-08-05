@@ -135,6 +135,67 @@ describe("seedDemoSite", () => {
     consoleSpy.mockRestore();
   });
 
+  it("preserves a disabled demo record across repeated seed calls (warm cache)", () => {
+    // Regression: seedDemoSite used to fall through to createSite whenever
+    // getSiteConfig returned null. Because getSiteConfig filters disabled
+    // sites, every server restart for an operator who disabled the demo
+    // would hit a UNIQUE constraint and log a misleading "Failed to seed
+    // demo site" error. The fix preserves the disabled state instead.
+    const env = makeEnv();
+    expect(seedDemoSite(store, env)).toBe(true);
+
+    // Operator disables the demo via the admin dashboard (or direct SQL).
+    const disabledConfig = { ...buildDemoSiteConfig(env), enabled: false };
+    store.updateSite("demo", disabledConfig);
+    expect(store.getSiteConfig("demo")).toBeNull();
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Two simulated restarts in a row. Each must return false, leave
+      // the demo disabled, and not log a seed error.
+      expect(seedDemoSite(store, env)).toBe(false);
+      expect(seedDemoSite(store, env)).toBe(false);
+
+      const seedErrorCalls = consoleSpy.mock.calls.filter((call) =>
+        String(call[0]).includes("Failed to seed demo site"),
+      );
+      expect(seedErrorCalls).toHaveLength(0);
+
+      // Operator intent preserved: the demo is still disabled and the
+      // runtime path (getSiteConfig) still hides it.
+      expect(store.getSiteConfig("demo")).toBeNull();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("preserves a pre-existing disabled demo record on cold startup", () => {
+    // Regression: same root cause, but with an empty in-memory cache to
+    // simulate a fresh process whose database already contains a
+    // disabled demo record. hasSiteRecord must hit the DB and the
+    // seeder must short-circuit before calling createSite.
+    const env = makeEnv();
+    const disabledConfig = { ...buildDemoSiteConfig(env), enabled: false };
+    store.createSite(disabledConfig);
+
+    // Fresh SiteStore instance over the same DB = empty cache.
+    const freshStore = new SiteStore(db);
+    expect(freshStore.getSiteConfig("demo")).toBeNull();
+    expect(freshStore.hasSiteRecord("demo")).toBe(true);
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(seedDemoSite(freshStore, env)).toBe(false);
+
+      const seedErrorCalls = consoleSpy.mock.calls.filter((call) =>
+        String(call[0]).includes("Failed to seed demo site"),
+      );
+      expect(seedErrorCalls).toHaveLength(0);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it("exposes a public projection that uses the same demo siteId", async () => {
     const env = makeEnv();
     seedDemoSite(store, env);
