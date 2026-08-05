@@ -154,6 +154,80 @@ describe("ResponseCache", () => {
     ).toBe("a-4");
   });
 
+  it("evicts across sites using the per-site maxEntries (global LRU)", () => {
+    // site-a's config asks for a small per-site cap; the deployment
+    // default in storageConfig is *larger* so the per-site value
+    // is what eviction must honor. site-b's per-site cap is the
+    // same as the deployment default so the test can also verify
+    // that the global LRU evicts site-a's oldest entry when a
+    // site-b write pushes the pool over the cap.
+    const siteA = { ...enabledConfig, maxEntries: 2 };
+    const siteB = { ...enabledConfig, maxEntries: 3 };
+    cache = new ResponseCache({ ...enabledConfig, maxEntries: 3 });
+
+    // Fill the shared pool with 2 entries from site-a + 1 from
+    // site-b. Total is 3, exactly at site-b's per-site cap and
+    // the deployment cap.
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA, "A1");
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA, "A2");
+    cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b1", last4MessagesHash: "hb1" }), siteB, "B1");
+    expect(cache.totalSize()).toBe(3);
+
+    // Add a second site-b entry. Total = 4 > site-b's per-site
+    // cap (3), so the global LRU must evict site-a's *oldest*
+    // entry (a1). site-b's per-site cap is the active one — not
+    // the storageConfig default of 3 and not site-a's cap of 2 —
+    // because eviction is invoked by site-b's `set`.
+    cache.set(sampleInput({ siteId: "site-b", lastUserMessage: "b2", last4MessagesHash: "hb2" }), siteB, "B2");
+
+    expect(cache.totalSize()).toBe(3);
+    expect(
+      cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA),
+    ).toBeNull();
+    // The newer site-a entry must still be there — a different
+    // site wrote, not site-a, so a2 is not the LRU victim.
+    expect(
+      cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA)?.content,
+    ).toBe("A2");
+    // Both site-b entries remain.
+    expect(
+      cache.get(sampleInput({ siteId: "site-b", lastUserMessage: "b1", last4MessagesHash: "hb1" }), siteB)?.content,
+    ).toBe("B1");
+    expect(
+      cache.get(sampleInput({ siteId: "site-b", lastUserMessage: "b2", last4MessagesHash: "hb2" }), siteB)?.content,
+    ).toBe("B2");
+  });
+
+  it("honors per-site maxEntries even when smaller than the deployment default", () => {
+    // The deployment default in storageConfig is 10 entries. The
+    // site config asks for just 2. After the second site-a
+    // insert, the per-site cap must take effect — the third
+    // site-a insert must evict the first site-a entry, even
+    // though 3 < 10 (the deployment default) would otherwise
+    // allow it. This is the exact failure mode the previous
+    // implementation had: it only looked at storageConfig and
+    // ignored the per-site override.
+    const siteA = { ...enabledConfig, maxEntries: 2 };
+    cache = new ResponseCache({ ...enabledConfig, maxEntries: 10 });
+
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA, "A1");
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA, "A2");
+    expect(cache.totalSize()).toBe(2);
+
+    cache.set(sampleInput({ siteId: "site-a", lastUserMessage: "a3", last4MessagesHash: "ha3" }), siteA, "A3");
+
+    expect(cache.totalSize()).toBe(2);
+    expect(
+      cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a1", last4MessagesHash: "ha1" }), siteA),
+    ).toBeNull();
+    expect(
+      cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a2", last4MessagesHash: "ha2" }), siteA)?.content,
+    ).toBe("A2");
+    expect(
+      cache.get(sampleInput({ siteId: "site-a", lastUserMessage: "a3", last4MessagesHash: "ha3" }), siteA)?.content,
+    ).toBe("A3");
+  });
+
   it("refreshes recency on get (LRU)", () => {
     const cfg = { ...enabledConfig, maxEntries: 2 };
     cache = new ResponseCache(cfg);

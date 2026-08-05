@@ -168,8 +168,11 @@ export function createChatRouter(
   // Hoist a single ResponseCache so cached entries survive across
   // requests. Constructing it per-request (as the previous
   // implementation did) meant every request started from an empty
-  // cache and never saw a hit.
-  const responseCache = new ResponseCache({ enabled: false, ttlSeconds: 3600, maxEntries: 1000 });
+  // cache and never saw a hit. The instance carries only the
+  // deployment-wide defaults (TTL + capacity fallback); the
+  // per-site `enabled` flag is consulted on every call via
+  // `ResponseCache.isEnabled(config.cache)`.
+  const responseCache = new ResponseCache({ ttlSeconds: 3600, maxEntries: 1000 });
 
   router.post("/", async (req, res) => {
     const config = req.siteConfig;

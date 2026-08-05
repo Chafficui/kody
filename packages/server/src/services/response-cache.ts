@@ -63,11 +63,14 @@ export class ResponseCache {
   private totalEntries = 0;
 
   /**
-   * Storage-level config (TTL, capacity). The per-site
-   * `enabled` flag is *not* part of this — callers pass the
-   * current site's `config.cache` into `isEnabled` / `get` /
-   * `set` so a single shared instance can serve many sites,
-   * some with caching on and some off.
+   * Storage-level config. Holds only the deployment-wide
+   * fallback for the *fields that aren't* (or can't be)
+   * overridden per site: `ttlSeconds` and `maxEntries` (when
+   * a site doesn't specify its own). The per-site `enabled`
+   * flag is *not* part of this — callers pass the current
+   * site's `config.cache` into `isEnabled` / `get` / `set`
+   * so a single shared instance can serve many sites, some
+   * with caching on and some off.
    */
   constructor(private storageConfig: ResponseCacheConfig) {}
 
@@ -99,8 +102,7 @@ export class ResponseCache {
       return null;
     }
 
-    const ttlSeconds = config.ttlSeconds ?? this.storageConfig.ttlSeconds ?? 3600;
-    const ttlMs = ttlSeconds * 1000;
+    const ttlMs = (config.ttlSeconds ?? this.storageConfig.ttlSeconds ?? 3600) * 1000;
     if (Date.now() - entry.createdAt > ttlMs) {
       this.removeNode(input.siteId, key);
       return null;
@@ -135,7 +137,7 @@ export class ResponseCache {
     this.totalEntries++;
     this.attachNode(input.siteId, key);
 
-    this.evictIfOverCapacity();
+    this.evictIfOverCapacity(config);
   }
 
   /**
@@ -170,8 +172,12 @@ export class ResponseCache {
     return this.totalEntries;
   }
 
-  private evictIfOverCapacity(): void {
-    const max = this.storageConfig.maxEntries ?? 1000;
+  private evictIfOverCapacity(siteConfig: ResponseCacheConfig): void {
+    // Resolve the cap the same way ttlSeconds is resolved above:
+    // per-site override first, then the deployment-wide default
+    // from the storageConfig, then a hard fallback so a missing
+    // config never grows the cache unbounded.
+    const max = siteConfig.maxEntries ?? this.storageConfig.maxEntries ?? 1000;
     while (this.totalEntries > max && this.tail) {
       const victim = this.tail;
       this.unlinkNode(victim.siteId, victim.key);
