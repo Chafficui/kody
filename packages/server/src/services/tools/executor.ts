@@ -192,9 +192,16 @@ export class ToolExecutor {
         headers,
         body: JSON.stringify({ tool: tool.name, arguments: args }),
         signal: controller.signal,
-        // Follow at most one redirect; any further hop is treated
-        // as untrusted (the customer endpoint can hand us back any
-        // URL it wants).
+        // undici's default redirect behavior is 'follow', which
+        // will chase any number of 3xx hops up to the fetch
+        // implementation's internal limit (20 in current undici).
+        // We accept this for the async-tool dispatch because the
+        // endpoint URL is operator-configured (not attacker-
+        // controlled) and the response is parsed as JSON for a
+        // jobId, not consumed as the request body. If the response
+        // contains a pollUrl, isAllowedPollUrl re-validates its
+        // origin against the endpoint origin, so a redirect chain
+        // cannot pivot the polling to a different host.
         redirect: "follow",
       });
 
