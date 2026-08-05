@@ -170,7 +170,7 @@ const migrations: Migration[] = [
     down: `
       DROP INDEX IF EXISTS idx_tool_jobs_status;
       DROP INDEX IF EXISTS idx_tool_jobs_site_session;
-      DROP INDEX IF NOT EXISTS uq_tool_jobs_site_job;
+      DROP INDEX IF EXISTS uq_tool_jobs_site_job;
       DROP TABLE IF EXISTS tool_jobs;
     `,
   },
