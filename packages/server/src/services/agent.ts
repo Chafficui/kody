@@ -261,11 +261,6 @@ async function pollAsyncTool(opts: {
   let lastProgress: number | null = null;
   let lastError: string | null = null;
   let lastResult: string | null = null;
-  // Tracks the most recent *successful* terminal status. If we hit
-  // a network error after a terminal status arrived (e.g. a flaky
-  // poll) we shouldn't clobber the success with a stale
-  // errorMessage.
-  let terminalReached = false;
 
   // Initial progress emit so the UI flips to "in progress" immediately
   callbacks.onToolProgress?.({
@@ -332,9 +327,6 @@ async function pollAsyncTool(opts: {
     const newError = typeof payload.error === "string" ? payload.error : null;
     lastStatus = newStatus;
     lastError = newError;
-    if (isTerminal(newStatus)) {
-      terminalReached = true;
-    }
 
     // Compute the error to persist. We clear `errorMessage` on a
     // successful (non-terminal) poll so a transient fetch error
