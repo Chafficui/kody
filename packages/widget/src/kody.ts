@@ -448,6 +448,7 @@ export class KodyWidget {
   }
 
   open(): void {
+    if (this.destroyed) return;
     if (this.isOpen || !this.chatWindow || !this.bubble) return;
     this.isOpen = true;
     this.chatWindow.setOpen(true);
@@ -583,6 +584,9 @@ export class KodyWidget {
    * initialised yet.
    */
   sendMessage(text: string): Promise<void> {
+    if (this.destroyed) {
+      return Promise.reject(new Error("[Kody] Widget has been destroyed; create a new instance to send messages"));
+    }
     if (!this.config) {
       return Promise.reject(new Error("[Kody] Widget not ready; await Kody.ready"));
     }
@@ -652,6 +656,7 @@ export class KodyWidget {
    * to set `data-theme` on the host. Pass "auto" to follow the OS.
    */
   setTheme(theme: "light" | "dark" | "auto"): void {
+    if (this.destroyed) return;
     this.resolvedTheme = theme;
     // Detach any prior auto listener before re-binding or switching away.
     if (this.darkModeQuery && this.darkModeListener) {

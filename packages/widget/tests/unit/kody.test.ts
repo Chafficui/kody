@@ -192,5 +192,30 @@ describe("KodyWidget public API", () => {
       widget.destroy();
       expect(document.getElementById("kody-widget")).toBeNull();
     });
+
+    it("open() becomes a no-op after destroy()", async () => {
+      const widget = await makeWidget();
+      widget.destroy();
+      // Destroyed widgets must not re-open or install new listeners
+      // (e.g. focus trap, transitionend handler) on a detached host.
+      widget.open();
+      expect(widget["isOpen"]).toBe(false);
+    });
+
+    it("setTheme() becomes a no-op after destroy()", async () => {
+      const widget = await makeWidget();
+      widget.setTheme("dark");
+      widget.destroy();
+      // Calling setTheme on a destroyed widget should not throw and
+      // should not rebind a dark-mode listener on a detached host.
+      expect(() => widget.setTheme("auto")).not.toThrow();
+      expect(widget["darkModeQuery"]).toBeNull();
+    });
+
+    it("sendMessage() rejects with a destruction-specific error after destroy()", async () => {
+      const widget = await makeWidget();
+      widget.destroy();
+      await expect(widget.sendMessage("hi")).rejects.toThrow(/destroyed/i);
+    });
   });
 });
