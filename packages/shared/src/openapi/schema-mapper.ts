@@ -143,17 +143,19 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
         items: zodToOas(inner, { path: `${ctx.path}[]` }),
       };
       applyDescription(def, out);
-      for (const check of (def.checks as Array<{ kind: string; value?: number }>) ?? []) {
-        switch (check.kind) {
-          case "min":
-            out.minItems = check.value;
-            break;
-          case "max":
-            out.maxItems = check.value;
-            break;
-          default:
-            break;
-        }
+      // Zod 3.25.76 stores array cardinality on the def as `minLength` /
+      // `maxLength` / `exactLength` rather than inside `def.checks` (which
+      // is now empty for arrays). `exactLength` wins when present so the
+      // emitted schema reports a single required cardinality.
+      const minLength = (def.minLength as { value: number } | null | undefined)?.value;
+      const maxLength = (def.maxLength as { value: number } | null | undefined)?.value;
+      const exactLength = (def.exactLength as { value: number } | null | undefined)?.value;
+      if (typeof exactLength === "number") {
+        out.minItems = exactLength;
+        out.maxItems = exactLength;
+      } else {
+        if (typeof minLength === "number") out.minItems = minLength;
+        if (typeof maxLength === "number") out.maxItems = maxLength;
       }
       return out;
     }
@@ -210,11 +212,9 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
       const out: OasSchema = { oneOf: options };
       applyDescription(def, out);
       // For discriminated unions, add the discriminator hint so Swagger UI
-      // renders the right picker.
-      const discriminator = (def.discriminator as string | undefined) ??
-        (def.typeName === "ZodDiscriminatedUnion"
-          ? ((def as unknown as { discriminator?: string }).discriminator ?? null)
-          : null);
+      // renders the right picker. Zod populates `def.discriminator` only
+      // for `ZodDiscriminatedUnion`; plain unions leave it undefined.
+      const discriminator = def.discriminator as string | undefined;
       if (discriminator) out.discriminator = { propertyName: discriminator };
       return out;
     }
