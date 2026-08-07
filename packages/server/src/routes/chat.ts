@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Router, type Router as RouterType } from "express";
 import type Database from "better-sqlite3";
-import { chatRequestSchema, type SiteConfig } from "@kody/shared";
+import { chatRequestSchema, type ChatMessage, type SiteConfig } from "@kody/shared";
 import type { ConversationStore } from "../services/conversation-store.js";
 import { filterInput } from "../services/guardrails/input-filter.js";
 import { buildSystemPrompt } from "../services/guardrails/system-prompt.js";
@@ -986,11 +986,12 @@ async function buildAndStoreSystemPrompt(
 ): Promise<string> {
   // Branch 1: brand-new conversation.
   if (conversation.messages.length === 0) {
-    return await buildAndAppendSystemPrompt(
+    return buildAndStoreSystemPromptForMode(
       sessionId,
       config,
       knowledgeAssembler,
       conversationStore,
+      "append",
     );
   }
 
@@ -1004,26 +1005,38 @@ async function buildAndStoreSystemPrompt(
   // Branch 3: missing system message — recover and *prepend* so
   // the recovered prompt precedes any existing user / assistant
   // turns (see the helper-level docstring above).
-  return await buildAndPrependSystemPrompt(
+  return buildAndStoreSystemPromptForMode(
     sessionId,
     config,
     knowledgeAssembler,
     conversationStore,
+    "prepend",
   );
 }
 
 /**
  * Build a fresh system prompt from the current site config and
- * append it to an empty conversation. Shared between the
- * brand-new branch of `buildAndStoreSystemPrompt` and as a
- * convenience for any future caller that wants to seed a
- * conversation with a system prompt without prepending.
+ * store it in the conversation, using `mode` to select whether
+ * it is added to the tail (the brand-new-conversation path —
+ * the list is empty so append and prepend are equivalent) or
+ * prepended ahead of any existing turns (the
+ * missing-system-message recovery path — a prepended prompt
+ * ensures the model sees it first regardless of which turn the
+ * conversation was on when the recovery happened).
+ *
+ * The prompt itself is built identically for both modes — the
+ * only difference is the storage call. Routing both branches
+ * through one helper keeps the prompt construction in a
+ * single place so a future change (new `buildSystemPrompt`
+ * input, additional knowledge assembler pass, etc.) is made
+ * once and applies to both.
  */
-async function buildAndAppendSystemPrompt(
+async function buildAndStoreSystemPromptForMode(
   sessionId: string,
   config: SiteConfig,
   knowledgeAssembler: KnowledgeAssembler,
   conversationStore: ConversationStore,
+  mode: "append" | "prepend",
 ): Promise<string> {
   const enrichedSources = await knowledgeAssembler.assemble(
     config.knowledge.sources,
@@ -1039,39 +1052,11 @@ async function buildAndAppendSystemPrompt(
     knowledge: { sources: enrichedSources },
     systemPromptPrefix: config.ai.systemPromptPrefix,
   });
-  conversationStore.addMessage(sessionId, { role: "system", content: systemPrompt });
-  return systemPrompt;
-}
-
-/**
- * Build a fresh system prompt and **prepend** it ahead of any
- * existing user / assistant turns in the conversation
- * history. Used by the missing-system-message fallback in
- * `buildAndStoreSystemPrompt` so a recovered prompt always
- * sits at the head of the transcript — the model will see it
- * first regardless of which turn the conversation was on when
- * the recovery happened.
- */
-async function buildAndPrependSystemPrompt(
-  sessionId: string,
-  config: SiteConfig,
-  knowledgeAssembler: KnowledgeAssembler,
-  conversationStore: ConversationStore,
-): Promise<string> {
-  const enrichedSources = await knowledgeAssembler.assemble(
-    config.knowledge.sources,
-    config.knowledge.maxContextTokens,
-  );
-  const systemPrompt = buildSystemPrompt({
-    branding: {
-      name: config.branding.name,
-      tagline: config.branding.tagline,
-    },
-    guardrails: config.guardrails,
-    personality: config.personality,
-    knowledge: { sources: enrichedSources },
-    systemPromptPrefix: config.ai.systemPromptPrefix,
-  });
-  conversationStore.prependMessage(sessionId, { role: "system", content: systemPrompt });
+  const message: ChatMessage = { role: "system", content: systemPrompt };
+  if (mode === "prepend") {
+    conversationStore.prependMessage(sessionId, message);
+  } else {
+    conversationStore.addMessage(sessionId, message);
+  }
   return systemPrompt;
 }
