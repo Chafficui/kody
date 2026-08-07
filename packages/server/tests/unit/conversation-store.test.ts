@@ -108,4 +108,46 @@ describe("ConversationStore", () => {
     expect(store.getMessages("does-not-exist")).toEqual([]);
     expect(store.has("does-not-exist")).toBe(false);
   });
+
+  it("prependMessage at MAX_MESSAGES keeps the prepended system message and trims the oldest turn", () => {
+    // Cover the missing-system-message recovery path on a
+    // conversation that has *already* grown past the cap. A
+    // recovered system prompt is what `prependMessage` is for;
+    // the trim must keep it at the head (system messages are
+    // never dropped) and retain the newest non-system turns
+    // while dropping the oldest.
+    store = new ConversationStore();
+    const conv = store.getOrCreate("site-1");
+    // Fill the conversation with the cap minus one user
+    // messages, plus one assistant reply, so the cap is
+    // exactly reached before the prepend.
+    const cap = 50;
+    for (let i = 0; i < cap - 1; i++) {
+      store.addMessage(conv.sessionId, { role: "user", content: `u-${i}` });
+    }
+    store.addMessage(conv.sessionId, { role: "assistant", content: "oldest-assistant" });
+    expect(store.getMessages(conv.sessionId)).toHaveLength(cap);
+
+    store.prependMessage(conv.sessionId, { role: "system", content: "recovered prompt" });
+
+    const messages = store.getMessages(conv.sessionId);
+    // The cap is still 50; the prepended system message is
+    // kept, the oldest user turn ("u-0") is dropped, and the
+    // rest of the transcript remains in original order.
+    expect(messages).toHaveLength(cap);
+    expect(messages[0]).toEqual({ role: "system", content: "recovered prompt" });
+    expect(messages.find((m) => m.role === "system")?.content).toBe("recovered prompt");
+    // The very oldest user turn ("u-0") should have been
+    // trimmed out so the new head count fits the cap.
+    expect(messages.some((m) => m.content === "u-0")).toBe(false);
+    // The most recent non-system turns are still present
+    // and in their original (user, user, ..., assistant)
+    // order.
+    expect(messages.find((m) => m.content === "oldest-assistant")).toBeDefined();
+    const userMessages = messages.filter((m) => m.role === "user").map((m) => m.content);
+    // The newest user turn is still "u-48" (index cap - 2,
+    // since "u-0" through "u-48" were the inputs and u-0 was
+    // trimmed).
+    expect(userMessages[userMessages.length - 1]).toBe("u-48");
+  });
 });

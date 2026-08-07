@@ -155,7 +155,7 @@ describe("ResponseCache", () => {
     ).toBe("a-4");
   });
 
-  it("enforces per-site ring cap and global cap independently", () => {
+  it("does not evict while both the per-site ring cap and the global cap have room", () => {
     // The cache has TWO independent caps:
     //   1. **Per-site ring cap** (per-site `config.maxEntries`,
     //      with `storageConfig.maxEntries` as the fallback).
