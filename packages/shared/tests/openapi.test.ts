@@ -147,7 +147,13 @@ describe("OpenAPI generator", () => {
     expect(required).toEqual(expect.arrayContaining(["name", "description", "parameters", "endpoint"]));
   });
 
-  it("maps the KnowledgeSource discriminated union with a discriminator", () => {
+  it("maps the KnowledgeSource discriminated union with inline oneOf branches", () => {
+    // The mapper inlines every union branch, so we deliberately omit the
+    // OpenAPI `discriminator` hint — emitting `{ propertyName }` alone
+    // against inline schemas is half-specified and Swagger UI / SDK
+    // generators handle it inconsistently. The discriminated union is
+    // still expressed (the consumer can match on the `type` property in
+    // each inline branch), we just don't ship a discriminator key.
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
     };
@@ -156,10 +162,12 @@ describe("OpenAPI generator", () => {
     expect(knowledgeSource.oneOf).toBeDefined();
     expect(Array.isArray(knowledgeSource.oneOf)).toBe(true);
     expect((knowledgeSource.oneOf as unknown[]).length).toBeGreaterThanOrEqual(4);
-    expect(knowledgeSource.discriminator).toEqual({ propertyName: "type" });
+    expect(knowledgeSource.discriminator).toBeUndefined();
   });
 
-  it("maps the TicketProvider discriminated union with a discriminator", () => {
+  it("maps the TicketProvider discriminated union with inline oneOf branches", () => {
+    // See the KnowledgeSource test above for the rationale — the same
+    // no-discriminator rule applies here because oneOf entries are inline.
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
     };
@@ -168,7 +176,7 @@ describe("OpenAPI generator", () => {
     expect(ticketProvider.oneOf).toBeDefined();
     expect(Array.isArray(ticketProvider.oneOf)).toBe(true);
     expect((ticketProvider.oneOf as unknown[]).length).toBeGreaterThanOrEqual(5);
-    expect(ticketProvider.discriminator).toEqual({ propertyName: "provider" });
+    expect(ticketProvider.discriminator).toBeUndefined();
   });
 
   it("requires x-kody-site-id on every widget-facing operation", () => {

@@ -211,11 +211,22 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
       );
       const out: OasSchema = { oneOf: options };
       applyDescription(def, out);
-      // For discriminated unions, add the discriminator hint so Swagger UI
-      // renders the right picker. Zod populates `def.discriminator` only
-      // for `ZodDiscriminatedUnion`; plain unions leave it undefined.
-      const discriminator = def.discriminator as string | undefined;
-      if (discriminator) out.discriminator = { propertyName: discriminator };
+      // We deliberately do not emit a `discriminator` hint here. The
+      // OpenAPI 3.0 / 3.1 discriminator object is only well-specified
+      // when the oneOf entries are named component references (`$ref`
+      // into `components.schemas`) AND an explicit `mapping` from each
+      // discriminator value to the corresponding $ref target is
+      // supplied. Emitting `{ propertyName }` alone against inline
+      // branches is a half-specified hint that Swagger UI and SDK
+      // generators handle inconsistently (some treat the bare
+      // propertyName as a soft hint, others as a strict ref
+      // requirement), and OpenAPI 3.0 considers it invalid alongside
+      // inline schemas. Our mapper inlines every branch, so the
+      // discriminator is omitted here. Re-introduce it once the
+      // mapper learns to emit $refs into `components.schemas` for
+      // each named branch — `openapi-spec.ts` already publishes the
+      // KnowledgeSource and TicketProvider branches as named
+      // components, so that refactor would be the missing piece.
       return out;
     }
 

@@ -771,8 +771,6 @@ components:
                     required:
                       - type
                       - entries
-                discriminator:
-                  propertyName: type
               default: []
             maxContextTokens:
               type: integer
@@ -950,8 +948,6 @@ components:
                     required:
                       - provider
                       - url
-                discriminator:
-                  propertyName: provider
               default: []
             requiredFields:
               type: array
@@ -1438,8 +1434,6 @@ components:
                     required:
                       - type
                       - entries
-                discriminator:
-                  propertyName: type
               default: []
             maxContextTokens:
               type: integer
@@ -1619,8 +1613,6 @@ components:
                     required:
                       - provider
                       - url
-                discriminator:
-                  propertyName: provider
               default: []
             requiredFields:
               type: array
@@ -2087,8 +2079,6 @@ components:
           required:
             - type
             - entries
-      discriminator:
-        propertyName: type
     KnowledgeSourceText:
       type: object
       properties:
@@ -2315,8 +2305,6 @@ components:
           required:
             - provider
             - url
-      discriminator:
-        propertyName: provider
     TicketProviderJira:
       type: object
       properties:
@@ -2790,8 +2778,6 @@ components:
           required:
             - type
             - suggestions
-      discriminator:
-        propertyName: type
     ChatEventStream:
       type: object
       description: >-
