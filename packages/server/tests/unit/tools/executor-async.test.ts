@@ -257,6 +257,63 @@ describe("ToolExecutor — async dispatch", () => {
     const call = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
     expect(call.redirect).toBe("error");
   });
+
+  it("rejects an http: dispatch URL that is not loopback", async () => {
+    // Async-tool dispatch carries operator-configured headers
+    // and tool arguments, so a cleartext transport would put
+    // both on the wire unencrypted. We must not even send the
+    // request — fail the dispatch before fetch is reached.
+    const config = makeConfig({
+      endpoint: { url: "http://attacker.example/run" },
+    } as Partial<CustomTool>);
+
+    const result = await executor.execute(makeCall("build_report"), config);
+
+    expect(result.async).toBeUndefined();
+    expect(result.result).toContain("Async tool dispatch failed");
+    expect(result.result).toContain("endpoint.url");
+    expect(result.result).toContain("https");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-loopback http: asyncPollUrl even when dispatch is https", async () => {
+    // The poll URL is the canonical fallback the agent will GET
+    // later (see the agent module). A cleartext fallback that
+    // is *only* used on the polling hop is just as much of a
+    // leak as a cleartext dispatch — validate it now.
+    const config = makeConfig({
+      endpoint: { asyncPollUrl: "http://attacker.example/poll" },
+    } as Partial<CustomTool>);
+
+    const result = await executor.execute(makeCall("build_report"), config);
+
+    expect(result.async).toBeUndefined();
+    expect(result.result).toContain("asyncPollUrl");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("allows a loopback http: dispatch URL for self-hosted tools", async () => {
+    // Operators wire self-hosted tools to `http://localhost`
+    // (or any 127.0.0.0/8 address) all the time during
+    // development. The HTTPS requirement is a public-host
+    // guardrail, not a universal "no cleartext anywhere"
+    // rule, so a loopback cleartext URL must still dispatch.
+    vi.mocked(fetch).mockResolvedValueOnce({
+      status: 202,
+      ok: true,
+      headers: new Headers(),
+      text: () => Promise.resolve(JSON.stringify({ jobId: "job-loopback" })),
+    } as unknown as Response);
+
+    const config = makeConfig({
+      endpoint: { url: "http://127.0.0.1:9000/run", asyncPollUrl: "http://localhost:9000/poll" },
+    } as Partial<CustomTool>);
+
+    const result = await executor.execute(makeCall("build_report"), config);
+
+    expect(result.async?.jobId).toBe("job-loopback");
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ToolJobStore", () => {

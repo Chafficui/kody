@@ -186,6 +186,41 @@ export class ToolExecutor {
       "X-Kody-Async": "true",
     };
 
+    // Refuse to dispatch (or accept a fallback pollUrl for) an
+    // async tool whose configured endpoint is not on a TLS origin.
+    // The dispatch request carries operator-configured headers
+    // and tool arguments, so a cleartext transport would put
+    // both on the wire unencrypted. `endpoint.asyncPollUrl`
+    // isn't fetched here, but it is the canonical fallback for
+    // the polling path (see the agent module), so we validate
+    // it now: an unencrypted fallback that *would* be used
+    // later is just as much of a leak as an unencrypted
+    // dispatch. HTTP is only acceptable for loopback hosts
+    // (localhost / *.localhost / 127.0.0.0/8 / ::1) so an
+    // operator can wire a self-hosted tool to `http://localhost`
+    // in development without opening every public endpoint to
+    // cleartext.
+    const dispatchUrlError = insecureEndpointReason(endpoint.url);
+    if (dispatchUrlError) {
+      return {
+        toolCallId: callId,
+        name: tool.name,
+        result: `Async tool dispatch failed: endpoint.url ${dispatchUrlError}`,
+        displayText: tool.description.slice(0, 50),
+      };
+    }
+    if (endpoint.asyncPollUrl) {
+      const pollUrlError = insecureEndpointReason(endpoint.asyncPollUrl);
+      if (pollUrlError) {
+        return {
+          toolCallId: callId,
+          name: tool.name,
+          result: `Async tool dispatch failed: endpoint.asyncPollUrl ${pollUrlError}`,
+          displayText: tool.description.slice(0, 50),
+        };
+      }
+    }
+
     try {
       const response = await fetch(endpoint.url, {
         method: endpoint.method,
@@ -359,4 +394,53 @@ function isAllowedPollUrl(candidate: string, endpoint: CustomTool["endpoint"]): 
     }
   }
   return allowedOrigins.has(parsed.origin) ? parsed.toString() : null;
+}
+
+/**
+ * Return a human-readable reason the URL is not acceptable as a
+ * configured async-tool dispatch / poll endpoint, or `null` if
+ * it is. Acceptable: any `https:` URL, or any `http:` URL whose
+ * host is a loopback name. The loopback carve-out lets an
+ * operator wire a self-hosted tool to `http://localhost` /
+ * `http://127.0.0.1` / `http://service.localhost` for
+ * development without opening every public endpoint to
+ * cleartext. Anything else (a non-loopback `http:`, or a
+ * non-http(s) protocol like `ftp:` / `file:` / `data:`) is
+ * rejected with a message that names the offending input so
+ * the misconfiguration is easy to fix.
+ */
+function insecureEndpointReason(rawUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return "is not a valid URL";
+  }
+  if (parsed.protocol === "https:") return null;
+  if (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)) return null;
+  if (parsed.protocol === "http:") {
+    return "must use https (loopback http is allowed for development)";
+  }
+  return "must use http or https";
+}
+
+/**
+ * True for hosts that are guaranteed to resolve to the local
+ * machine: the reserved `localhost` name, any name under
+ * `.localhost` (RFC 6761), the IPv4 loopback range
+ * `127.0.0.0/8`, and the IPv6 loopback `::1`. Anything else
+ * is treated as a public host and requires TLS.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  if (hostname === "::1") return true;
+  // `127.0.0.0/8` — the entire class-A block is reserved for
+  // loopback (RFC 1122). We accept any address in the range
+  // even though the spec only mandates `127.0.0.1`; treating
+  // 127.x.y.z as loopback is what every browser / OS resolver
+  // does in practice and matches what an operator expects
+  // when they wire a sidecar to a non-default loopback IP.
+  if (/^127\.\d+\.\d+\.\d+$/.test(hostname)) return true;
+  return false;
 }
