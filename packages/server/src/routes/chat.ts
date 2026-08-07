@@ -27,11 +27,18 @@ const SUGGEST_CLOSE = "<</SUGGEST>>";
  * single HTTP/1.1 connection in Node — a healthy client drains
  * well below this on every event-loop tick, so a value above
  * the bound is a reliable signal of a stuck or dead consumer.
- * A short spike (e.g. the AI emitting a few large tokens back
- * to back) can momentarily cross the high-water mark; that is
- * normal backpressure and we let the next `safeWrite` retry
- * naturally. Only a sustained overflow (every safeWrite sees
- * `writableLength > MAX_BUFFERED_BYTES`) trips the abort.
+ *
+ * Note: this bound is enforced as a **single-observation** check
+ * inside `safeWrite`, not a sustained-overflow heuristic. A
+ * single `res.write` returning `false` with
+ * `res.writableLength > MAX_BUFFERED_BYTES` flips `closed` and
+ * aborts the AI stream on the spot — a brief token burst that
+ * briefly crosses the bound while the consumer is still
+ * draining is enough to trigger the abort. The AI provider's
+ * own pacing is fast enough that, in practice, an
+ * already-stuck client is the only way to land here with
+ * `writableLength` this high; we accept the false-positive
+ * risk for the cheaper code path.
  */
 const MAX_BUFFERED_BYTES = 1_000_000;
 const FALLBACK_HEADERS = [
@@ -363,30 +370,30 @@ export function createChatRouter(
         // full (a phone locking the screen, the tab
         // backgrounded, etc).
         //
-        // What we *do* need to guard against is a sustained
-        // backpressure condition: if the buffered byte count
-        // stays above the bound for too long, the client is
-        // effectively gone and continuing to pump AI tokens
-        // into the buffer wastes the per-turn budget on output
-        // no one will read. We check `res.writableLength` (the
-        // current number of bytes buffered for write, not yet
-        // acked) on every safeWrite and treat a value well
-        // above `MAX_BUFFERED_BYTES` as a stuck client: stop
-        // the stream, detach listeners, mark the response
-        // closed. The `drain` event is not awaited here — the
-        // token-replay loop is fast enough that a healthy
-        // client drains within a few iterations of the event
-        // loop, so a single-tick check is enough to
-        // distinguish "draining" from "stuck".
+        // What we *do* need to guard against is a buffered-byte
+        // blowup: if the client has fallen well behind the AI
+        // stream, the next write is likely to land in a buffer
+        // that nobody will ever drain, so we stop pumping tokens
+        // into it. We check `res.writableLength` (the current
+        // number of bytes buffered for write, not yet acked)
+        // and treat a value well above `MAX_BUFFERED_BYTES` as
+        // a stuck client: stop the stream, mark the response
+        // closed. This is a single-observation check — a single
+        // `res.write` returning `false` with a `writableLength`
+        // above the bound is enough to trip the abort. The
+        // `drain` event is not awaited here: the token-replay
+        // loop is fast enough that a healthy client drains
+        // within a few iterations of the event loop, so a
+        // single-tick check is enough to distinguish "draining"
+        // from "stuck".
         if (ok === false) {
           if (res.writableLength > MAX_BUFFERED_BYTES) {
-            // Sustained backpressure — the client cannot keep
-            // up. Tear the stream down so we stop burning
-            // tokens on output no one will read. This is
-            // observation-based, not premature: a single
-            // `false` with a small `writableLength` is
-            // normal backpressure and we let the next
-            // safeWrite retry naturally.
+            // Single-observation backpressure blowup — the
+            // client cannot keep up. Tear the stream down so
+            // we stop burning tokens on output no one will
+            // read. A single `false` with a small
+            // `writableLength` is normal backpressure and we
+            // let the next safeWrite retry naturally.
             closed = true;
             if (!abortController.signal.aborted) abortController.abort();
             return false;
