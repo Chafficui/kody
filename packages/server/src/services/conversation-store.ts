@@ -52,12 +52,7 @@ export class ConversationStore {
     conversation.messages.push(message);
     conversation.lastActivity = Date.now();
 
-    if (conversation.messages.length > MAX_MESSAGES) {
-      const systemMessages = conversation.messages.filter((m) => m.role === "system");
-      const nonSystemMessages = conversation.messages.filter((m) => m.role !== "system");
-      const trimmed = nonSystemMessages.slice(-MAX_MESSAGES + systemMessages.length);
-      conversation.messages = [...systemMessages, ...trimmed];
-    }
+    this.trimToMax(conversation);
   }
 
   /**
@@ -72,13 +67,14 @@ export class ConversationStore {
    * recovered system prompt would be the *last* thing the
    * model reads instead of the first.
    *
-   * The same `MAX_MESSAGES` cap as `addMessage` applies; the
-   * prepended message is treated as a non-system message for
-   * the trim, so a conversation that has already grown past
-   * the cap will keep its most recent user/assistant turns
-   * and the prepended system message is preserved (the cap
-   * already special-cases system messages to never be
-   * trimmed).
+   * The same `MAX_MESSAGES` cap as `addMessage` applies. A
+   * prepended **system** message is preserved by the trim
+   * (system messages are never dropped — see `trimToMax`),
+   * so a prepended system prompt always remains at the head
+   * of the transcript after the cap kicks in. A prepended
+   * non-system message follows the same retention rule as
+   * `addMessage`: the newest `MAX_MESSAGES - systemCount`
+   * non-system turns are kept and the oldest are dropped.
    */
   prependMessage(sessionId: string, message: ChatMessage): void {
     const conversation = this.conversations.get(sessionId);
@@ -87,12 +83,7 @@ export class ConversationStore {
     conversation.messages.unshift(message);
     conversation.lastActivity = Date.now();
 
-    if (conversation.messages.length > MAX_MESSAGES) {
-      const systemMessages = conversation.messages.filter((m) => m.role === "system");
-      const nonSystemMessages = conversation.messages.filter((m) => m.role !== "system");
-      const trimmed = nonSystemMessages.slice(-MAX_MESSAGES + systemMessages.length);
-      conversation.messages = [...systemMessages, ...trimmed];
-    }
+    this.trimToMax(conversation);
   }
 
   /**
@@ -114,6 +105,24 @@ export class ConversationStore {
 
   getTranscript(sessionId: string): ChatMessage[] {
     return this.getMessages(sessionId).filter((m) => m.role !== "system");
+  }
+
+  /**
+   * Trim a conversation back to the `MAX_MESSAGES` cap while
+   * keeping every system message (so a recovered system
+   * prompt is never silently dropped) and the most recent
+   * non-system turns. Shared by `addMessage` and
+   * `prependMessage` so the retention policy is enforced in
+   * exactly one place — a future change to the cap or to the
+   * system-message rule is automatically picked up by both
+   * storage paths.
+   */
+  private trimToMax(conversation: Conversation): void {
+    if (conversation.messages.length <= MAX_MESSAGES) return;
+    const systemMessages = conversation.messages.filter((m) => m.role === "system");
+    const nonSystemMessages = conversation.messages.filter((m) => m.role !== "system");
+    const trimmed = nonSystemMessages.slice(-MAX_MESSAGES + systemMessages.length);
+    conversation.messages = [...systemMessages, ...trimmed];
   }
 
   private evictOldest(): void {
