@@ -101,6 +101,43 @@ describe("KodyWidget public API", () => {
       expect(headers["x-kody-user-id"]).toBe("u-1");
       expect(headers["x-kody-user-traits"]).toBe(JSON.stringify({ plan: "pro" }));
     });
+
+    it("omits identity headers after identify(undefined)", async () => {
+      // The docs promise that passing undefined clears the user id.
+      // Before the fix, the call was rejected at the type level AND a
+      // JS caller would still store an identity object (with
+      // userId === undefined) that buildMessageHeaders() would treat
+      // as a truthy identity and emit the header anyway. We use a
+      // fresh widget to avoid the in-flight sendMessage guard
+      // (mirroring the setUserContext "removes the header" test).
+      const widget = await makeWidget();
+      widget.identify(undefined);
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(`data: ${JSON.stringify({ type: "done" })}\n\n`, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+      globalThis.fetch = fetchMock;
+
+      await widget.sendMessage("hello");
+      const chatCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/chat"));
+      expect(chatCall).toBeDefined();
+      const headers = (chatCall![1] as RequestInit).headers as Record<string, string>;
+      // Site id is still public; identity headers must be absent.
+      expect(headers["x-kody-site-id"]).toBe("test-site");
+      expect(headers["x-kody-user-id"]).toBeUndefined();
+      expect(headers["x-kody-user-traits"]).toBeUndefined();
+    });
+
+    it("accepts undefined as the userId (TypeScript contract)", () => {
+      // Compile-time check: this must typecheck with the relaxed
+      // signature. If someone reverts the parameter back to `string`,
+      // this line will fail to build.
+      const widget = new KodyWidget({ siteId: "s", serverUrl: "https://x" });
+      widget.identify(undefined);
+      widget.destroy();
+    });
   });
 
   describe("setUserContext", () => {

@@ -630,10 +630,13 @@ export class KodyWidget {
   /**
    * Mark a known user. The userId is sent with every request as
    * `x-kody-user-id`; traits are JSON-encoded into
-   * `x-kody-user-traits`. Pass undefined for either field to clear.
+   * `x-kody-user-traits`. Pass `undefined` as the userId to clear
+   * the identity — subsequent requests will omit the user headers.
    */
-  identify(userId: string, traits?: Record<string, unknown>): void {
-    this.client.setIdentity({ userId, traits });
+  identify(userId: string | undefined, traits?: Record<string, unknown>): void {
+    this.client.setIdentity(
+      userId === undefined ? undefined : { userId, traits },
+    );
   }
 
   /**
