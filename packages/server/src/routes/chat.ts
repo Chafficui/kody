@@ -307,21 +307,30 @@ export function createChatRouter(
     // regardless of where the response is in its lifecycle, so it
     // is the reliable trigger for tearing down the in-flight AI
     // stream and any pending async-tool polls.
+    //
+    // Capture the socket reference once. Node is allowed to detach
+    // `req.socket` once the response completes — under HTTP/1.1
+    // keep-alive the socket is reused for the next request, so if
+    // we read `req.socket` again at cleanup time we can land on a
+    // *different* object (or `null`) and leak the listener onto
+    // the keep-alive socket. Holding the reference locally pins
+    // the same object the listener was attached to.
+    const reqSocket = req.socket ?? null;
     req.on("close", onReqClose);
     req.on("aborted", onReqClose);
-    req.socket?.on("close", onReqClose);
+    reqSocket?.on("close", onReqClose);
     // All three registrations are detached together via
-    // `detachCloseListeners` on every normal-completion exit path
-    // (see the helpers below) so a stale listener doesn't
-    // accidentally fire after `res.end()`. The previous code only
-    // called `req.off("close", onReqClose)`, which left the
-    // `aborted` and socket-close listeners wired up — harmless in
-    // practice but a latent footgun if any of them ever started
+    // `detachCloseListeners` from the streaming `try { ... }
+    // finally` below so every exit path (success, error,
+    // cache-hit return) runs the detach exactly once. The previous
+    // code only called `req.off("close", onReqClose)`, which left
+    // the `aborted` and socket-close listeners wired up — harmless
+    // in practice but a latent footgun if any of them ever started
     // doing real work.
     const detachCloseListeners = () => {
       req.off("close", onReqClose);
       req.off("aborted", onReqClose);
-      req.socket?.off("close", onReqClose);
+      reqSocket?.off("close", onReqClose);
     };
 
     // Site fingerprint: a hash of the resolved system prompt and
@@ -406,6 +415,19 @@ export function createChatRouter(
 
     const capabilities = await probeCapabilities(config.ai);
 
+    // Wrap the entire streaming body (probe → tool / RAG / plain
+    // branch, including the cache-hit early return) in a single
+    // `try { ... } finally { detachCloseListeners(); }` so the
+    // close / aborted / socket-close listeners are removed
+    // exactly once on every exit path: normal completion, an
+    // exception bubbling out of `probeCapabilities` /
+    // `retriever.retrieve` / `streamChatCompletion`, and the
+    // `return` inside the cache-hit branches. Without the finally,
+    // any of those paths would exit through Express's error
+    // handler and skip the detach — leaving the listeners wired
+    // up against the (potentially keep-alive) socket and
+    // accumulating across requests.
+    try {
     if (config.tools.enabled && capabilities.supportsTools && db) {
       const embeddingService = createEmbeddingService(config.ai);
       const retriever = capabilities.supportsEmbeddings
@@ -455,8 +477,6 @@ export function createChatRouter(
         },
         scrubberConfig,
       });
-
-      detachCloseListeners();
 
       if (!agentStreamError) {
         let suggestions = agentFilter.getSuggestions();
@@ -558,7 +578,6 @@ export function createChatRouter(
           conversationStore,
           requestSessionId,
           initialSessionId,
-          detachCloseListeners,
         });
         return;
       }
@@ -593,8 +612,6 @@ export function createChatRouter(
         },
         { signal: abortController.signal },
       );
-
-      detachCloseListeners();
 
       if (!ragStreamError) {
         let suggestions = ragFilter.getSuggestions();
@@ -681,7 +698,6 @@ export function createChatRouter(
           conversationStore,
           requestSessionId,
           initialSessionId,
-          detachCloseListeners,
         });
         return;
       }
@@ -716,8 +732,6 @@ export function createChatRouter(
         },
         { signal: abortController.signal },
       );
-
-      detachCloseListeners();
 
       if (!streamError) {
         let suggestions = filter.getSuggestions();
@@ -771,6 +785,9 @@ export function createChatRouter(
           });
         }
       }
+    }
+    } finally {
+      detachCloseListeners();
     }
   });
 
@@ -839,10 +856,10 @@ function buildSiteFingerprint(config: SiteConfig, systemPrompt: string): string 
  * scrubbing policy is uniform: any future change to the
  * hit-replay contract is made in one place.
  *
- * The `detachCloseListeners` callback removes the request's
- * close / aborted / socket-close listeners — every normal
- * completion path detaches them so a stale listener doesn't
- * fire after the response has been fully written.
+ * The chat route wraps its streaming body in a `try { ... }
+ * finally { detachCloseListeners(); }`, so the close / aborted /
+ * socket-close listeners are removed automatically when this
+ * helper returns — no need for the helper to do it itself.
  */
 function replayCacheHit(params: {
   safeWrite: (chunk: string) => boolean;
@@ -855,7 +872,6 @@ function replayCacheHit(params: {
   conversationStore: ConversationStore;
   requestSessionId: string | undefined;
   initialSessionId: string;
-  detachCloseListeners: () => void;
 }): void {
   const scrubbedHit = scrubOutput(params.cacheHit.content, params.scrubberConfig);
   if (scrubbedHit.blocked) {
@@ -891,7 +907,6 @@ function replayCacheHit(params: {
     role: "assistant",
     content: scrubbedHit.blocked ? params.refusalMessage : scrubbedHit.content,
   });
-  params.detachCloseListeners();
 }
 
 /**
