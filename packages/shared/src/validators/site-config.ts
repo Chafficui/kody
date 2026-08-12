@@ -200,7 +200,8 @@ const toolRetrySchema = z.object({
   baseDelayMs: z.number().int().min(50).max(5000).default(250),
 });
 
-const customToolSchema = z.object({
+export const customToolSchema = z
+  .object({
   name: z
     .string()
     .min(1)
@@ -212,18 +213,29 @@ const customToolSchema = z.object({
     properties: z.record(toolParameterSchema),
     required: z.array(z.string()).default([]),
   }),
-  endpoint: z.object({
-    url: z.string().url(),
-    method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
-    headers: z.record(z.string()).default({}),
-    timeoutMs: z.number().int().min(1000).max(30000).default(10000),
-    /** Optional HMAC-SHA256 secret. When set, the body is signed and sent in `X-Kody-Signature`. */
-    secret: z.string().min(1).optional(),
-    /** Optional bearer / api-key auth. Overrides any matching header in `headers`. */
-    auth: toolAuthSchema.optional(),
-    /** Optional retry policy applied on transient errors. */
-    retry: toolRetrySchema.optional(),
-  }),
+  endpoint: z
+    .object({
+      url: z.string().url(),
+      method: z.enum(["GET", "POST", "PUT", "PATCH"]).default("POST"),
+      headers: z.record(z.string()).default({}),
+      timeoutMs: z.number().int().min(1000).max(30000).default(10000),
+      /** Optional HMAC-SHA256 secret. When set, the body is signed and sent in `X-Kody-Signature`. */
+      secret: z.string().min(1).optional(),
+      /** Optional bearer / api-key auth. Overrides any matching header in `headers`. */
+      auth: toolAuthSchema.optional(),
+      /** Optional retry policy applied on transient errors. */
+      retry: toolRetrySchema.optional(),
+    })
+    .refine(
+      (e) => {
+        // Authenticated endpoints must use HTTPS — sending bearer/api-key
+        // tokens over plain HTTP would expose them on the wire. The validator
+        // ignores this for unauthenticated endpoints.
+        if (!e.auth) return true;
+        return /^https:\/\//i.test(e.url);
+      },
+      { message: "Authenticated tool endpoints must use https://", path: ["url"] },
+    ),
 });
 
 export const toolsSchema = z.object({

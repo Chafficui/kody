@@ -25,11 +25,20 @@ import { UrlFetcher } from "./services/knowledge/url-fetcher.js";
 import { ScrapeStore } from "./services/scrape-store.js";
 import { createAdminScrapingRouter } from "./routes/admin/scraping.js";
 import { createAdminToolsRouter } from "./routes/admin/tools.js";
+import { ToolExecutor } from "./services/tools/executor.js";
 
 export interface AppDependencies {
   db: Database.Database;
   rateLimiter?: RateLimiter;
   conversationStore?: ConversationStore;
+  /**
+   * Optional pre-configured ToolExecutor. When supplied, the admin tools
+   * test endpoint and any other in-process tool surface share this
+   * instance — including any handlers registered via the executor's
+   * ToolRegistry. When omitted, the app creates a fresh executor with
+   * no in-process handlers.
+   */
+  toolExecutor?: ToolExecutor;
 }
 
 export function createApp(
@@ -42,6 +51,13 @@ export function createApp(
   const conversationStore = deps.conversationStore ?? new ConversationStore();
   const urlFetcher = new UrlFetcher();
   const scrapeStore = new ScrapeStore(deps.db, urlFetcher, siteStore);
+  // The admin tools test surface reuses the application's executor so
+  // any in-process tools registered at startup (via Toolkit.export() →
+  // getRegistry().register()) are reachable from the admin "Test tool"
+  // button. A shared instance is also the only safe way to thread a
+  // retriever into the executor without the admin route re-instantiating
+  // it.
+  const toolExecutor = deps.toolExecutor ?? new ToolExecutor(null);
 
   app.use(
     helmet({
@@ -89,7 +105,7 @@ export function createApp(
   const adminAuth = createAdminAuth(authService);
   app.use("/api/admin/sites", adminAuth, createAdminSitesRouter(siteStore));
   app.use("/api/admin/sites", adminAuth, createAdminScrapingRouter(scrapeStore));
-  app.use("/api/admin/sites", adminAuth, createAdminToolsRouter(siteStore));
+  app.use("/api/admin/sites", adminAuth, createAdminToolsRouter(siteStore, toolExecutor));
   app.use("/api/admin/users", adminAuth, createAdminUsersRouter(authService));
   app.use("/api/admin/logs", adminAuth, createAdminLogsRouter());
 

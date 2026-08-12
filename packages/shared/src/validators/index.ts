@@ -10,6 +10,7 @@ export {
   rateLimitSchema,
   ragSchema,
   toolsSchema,
+  customToolSchema,
   publicSiteConfigSchema,
   publicBrandingSchema,
   toPublicConfig,
