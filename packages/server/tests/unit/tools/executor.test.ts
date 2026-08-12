@@ -337,4 +337,59 @@ describe("ToolExecutor", () => {
     expect(result.result).toContain("DOES_NOT_EXIST_TOKEN");
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it("GET request omits the body and serialises arguments into the query string", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "{}" });
+    const tool: CustomTool = {
+      ...httpTool,
+      name: "search",
+      endpoint: { ...httpTool.endpoint, method: "GET" as const },
+    };
+    const exec = new ToolExecutor(null);
+    await exec.execute(
+      {
+        id: "tc1",
+        function: {
+          name: "search",
+          arguments: JSON.stringify({ q: "kody", page: 2, skip: null }),
+        },
+      },
+      makeConfig([tool]),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledOpts] = mockFetch.mock.calls[0];
+    expect(calledUrl).toContain("https://api.example.com/ping");
+    expect(calledUrl).toContain("q=kody");
+    expect(calledUrl).toContain("page=2");
+    // Nullish values must be skipped, not serialised as `skip=null`.
+    expect(calledUrl).not.toContain("skip=");
+    // The body is omitted entirely for bodyless methods.
+    expect(calledOpts.body).toBeUndefined();
+    // Content-Type is not set when no body is sent.
+    expect(calledOpts.headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("GET request with a pre-existing query string preserves it", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => "{}" });
+    const tool: CustomTool = {
+      ...httpTool,
+      name: "search",
+      endpoint: {
+        ...httpTool.endpoint,
+        method: "GET" as const,
+        url: "https://api.example.com/search?preset=demo",
+      },
+    };
+    const exec = new ToolExecutor(null);
+    await exec.execute(
+      {
+        id: "tc1",
+        function: { name: "search", arguments: JSON.stringify({ q: "kody" }) },
+      },
+      makeConfig([tool]),
+    );
+    const [calledUrl] = mockFetch.mock.calls[0];
+    expect(calledUrl).toContain("preset=demo");
+    expect(calledUrl).toContain("q=kody");
+  });
 });

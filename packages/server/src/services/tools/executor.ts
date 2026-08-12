@@ -50,6 +50,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Build a final URL for bodyless methods (GET/HEAD/DELETE). The agent's
+ * arguments are appended to the existing query string. Nullish values
+ * are skipped so the URL never carries `?foo=`. The function returns
+ * the original URL on any URL parse / serialization error so the
+ * executor's never-throw contract holds.
+ */
+function buildGetUrl(baseUrl: string, args: Record<string, unknown>): string {
+  try {
+    const parsed = new URL(baseUrl);
+    for (const [k, v] of Object.entries(args)) {
+      if (v === undefined || v === null) continue;
+      parsed.searchParams.set(k, String(v));
+    }
+    return parsed.toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
 /** Resolve an auth value, optionally from `process.env`. */
 function resolveAuthValue(value: string, fromEnv: boolean): string {
   if (!fromEnv) return value;
@@ -210,16 +230,22 @@ export class ToolExecutor {
     const effectiveMax = methodIsIdempotent || idempotencyKey ? maxAttempts : 1;
 
     const bodyText = JSON.stringify({ tool: tool.name, arguments: args });
+    // GET has no request body — serialise the agent's arguments as a
+    // query string on the URL instead. fetch in node throws a TypeError
+    // when `body` is set together with GET, so we have to drop the body
+    // entirely for that method.
+    const methodIsBodyless = endpoint.method === "GET";
+    const finalUrl = methodIsBodyless ? buildGetUrl(endpoint.url, args) : endpoint.url;
 
     // Build the headers. The auth resolution happens inside the try/catch
     // so a missing env var becomes a structured tool failure, not a
     // thrown error that escapes the executor's never-throw contract.
     const baseHeaders: Record<string, string> = {
-      "Content-Type": "application/json",
+      ...(methodIsBodyless ? {} : { "Content-Type": "application/json" }),
       ...endpoint.headers,
     };
     if (idempotencyKey) baseHeaders["Idempotency-Key"] = idempotencyKey;
-    if (endpoint.secret) {
+    if (endpoint.secret && !methodIsBodyless) {
       baseHeaders["X-Kody-Signature"] = createHmac("sha256", endpoint.secret)
         .update(bodyText)
         .digest("hex");
@@ -255,10 +281,12 @@ export class ToolExecutor {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), endpoint.timeoutMs);
       try {
-        const response = await fetch(endpoint.url, {
+        const response = await fetch(finalUrl, {
           method: endpoint.method,
           headers: baseHeaders,
-          body: bodyText,
+          // Omit the body for bodyless methods (GET/HEAD/DELETE) — fetch
+          // would throw a TypeError otherwise.
+          ...(methodIsBodyless ? {} : { body: bodyText }),
           signal: controller.signal,
           redirect: "manual",
         });
