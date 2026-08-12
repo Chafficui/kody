@@ -58,3 +58,11 @@ export {
   type AdminLogin,
   type AdminCreateUser,
 } from "./admin.js";
+
+export {
+  widgetMountConfigSchema,
+  widgetBrandingSchema,
+  parseDataAttributes,
+  type WidgetMountConfig,
+  type WidgetBranding,
+} from "./widget-config.js";

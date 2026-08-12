@@ -31,6 +31,12 @@ import {
   type Conversation,
 } from "./utils/session.js";
 import { createChatSidebar, type ChatSidebar } from "./components/chat-sidebar.js";
+import { EventEmitter, type EventName, type EventPayload } from "./utils/emitter.js";
+import { installFocusTrap, focusFirst } from "./utils/focus-trap.js";
+import { installKeyboardShortcut, parseShortcutSpec } from "./utils/keyboard.js";
+import { en, resolveStrings, type WidgetStrings } from "./i18n/en.js";
+
+export const WIDGET_VERSION = "0.2.0";
 
 export interface KodyWidgetConfig {
   siteId: string;
@@ -39,6 +45,62 @@ export interface KodyWidgetConfig {
     name?: string;
     primaryColor?: string;
     position?: "bottom-right" | "bottom-left";
+  };
+  // ── Stream B additions ────────────────────────────────────────────────
+  locale?: string;
+  openOnLoad?: boolean;
+  prefillMessage?: string;
+  userId?: string;
+  userTraits?: Record<string, unknown>;
+  theme?: "light" | "dark" | "auto";
+  userContext?: Record<string, unknown>;
+  keyboardShortcut?: string | boolean;
+}
+
+/**
+ * The shape exposed to host pages on `window.Kody` and returned from
+ * the ESM `mount()` function.
+ */
+export interface KodyPublicAPI {
+  open(): void;
+  close(): void;
+  toggle(): void;
+  destroy(): void;
+  onOpen(callback: () => void): void;
+  onClose(callback: () => void): void;
+  sendMessage(text: string): Promise<void>;
+  prefillInput(text: string): void;
+  setUserContext(ctx: Record<string, unknown> | undefined): void;
+  setLocale(locale: string): void;
+  setTheme(theme: "light" | "dark" | "auto"): void;
+  on<E extends EventPayload>(event: E["type"], cb: (payload: E) => void): () => void;
+  identify(userId: string, traits?: Record<string, unknown>): void;
+  version: string;
+  ready: Promise<void>;
+}
+
+/**
+ * Build the public API surface for an existing widget instance.
+ * Shared between the IIFE auto-init (which sets `window.Kody`) and
+ * the ESM `mount()` export.
+ */
+export function buildPublicAPI(widget: KodyWidget): KodyPublicAPI {
+  return {
+    open: () => widget.open(),
+    close: () => widget.close(),
+    toggle: () => widget.toggle(),
+    destroy: () => widget.destroy(),
+    onOpen: (cb) => widget.onOpen(cb),
+    onClose: (cb) => widget.onClose(cb),
+    sendMessage: (text) => widget.sendMessage(text),
+    prefillInput: (text) => widget.prefillInput(text),
+    setUserContext: (ctx) => widget.setUserContext(ctx),
+    setLocale: (locale) => widget.setLocale(locale),
+    setTheme: (theme) => widget.setTheme(theme),
+    on: (event, cb) => widget.on(event as EventName, cb as (payload: EventPayload) => void),
+    identify: (userId, traits) => widget.identify(userId, traits),
+    version: WIDGET_VERSION,
+    ready: widget.ready,
   };
 }
 
@@ -65,11 +127,52 @@ export class KodyWidget {
   private activeConversationId: string | null = null;
   private sidebar: ChatSidebar | null = null;
   private sidebarOpen = false;
+  private focusTrapTeardown: (() => void) | null = null;
+  private openTransitionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Stored reference to the open-transition `onEnd` listener so it
+   *  can be removed if `close()` / `destroy()` race with the open
+   *  transition. `removeEventListener` needs the same function ref. */
+  private openTransitionEnd: (() => void) | null = null;
+  /** Set by `destroy()` so `init()` can short-circuit after a delayed
+   *  `fetchConfig()` resolves on a host that has already been torn down. */
+  private destroyed = false;
+  private keyboardTeardown: (() => void) | null = null;
+  private darkModeListener: ((e: MediaQueryListEvent) => void) | null = null;
+  /**
+   * Teardown callbacks for global listeners installed during
+   * `init()` (page-lifecycle + visualViewport). `destroy()` runs and
+   * clears them so a remount can't keep stale `beforeunload`,
+   * `pagehide`, or viewport-resize handlers — those would otherwise
+   * continue to call into a detached widget and could overwrite
+   * freshly-stored state when the next instance mounts.
+   */
+  private lifecycleTeardowns: Array<() => void> = [];
+  private resolvedTheme: "light" | "dark" | "auto" = "light";
+  private strings: WidgetStrings = en;
+  private locale: string | undefined;
+  private emitter = new EventEmitter();
+  private readyResolve!: () => void;
+  /** A promise that resolves when init() finishes and the bubble is mounted. */
+  public readonly ready: Promise<void> = new Promise<void>((resolve) => {
+    this.readyResolve = resolve;
+  });
 
   constructor(private widgetConfig: KodyWidgetConfig) {
+    this.locale = widgetConfig.locale;
+    this.strings = resolveStrings(widgetConfig.locale);
     this.client = new KodyApiClient(widgetConfig.serverUrl, widgetConfig.siteId);
     this.sessionId = getSessionId(widgetConfig.siteId);
     this.messages = getStoredMessages(widgetConfig.siteId);
+
+    if (widgetConfig.userId || widgetConfig.userTraits) {
+      this.client.setIdentity({
+        userId: widgetConfig.userId ?? "",
+        traits: widgetConfig.userTraits,
+      });
+    }
+    if (widgetConfig.userContext) {
+      this.client.setUserContext(widgetConfig.userContext);
+    }
 
     this.host = document.createElement("div");
     this.host.id = "kody-widget";
@@ -80,20 +183,33 @@ export class KodyWidget {
   async init(): Promise<void> {
     try {
       this.config = await this.client.fetchConfig();
-    } catch {
-      console.error("[Kody] Failed to fetch config");
+    } catch (err) {
+      console.error("[Kody] Failed to fetch config", err);
+      this.emitter.emit({ type: "error", message: (err as Error).message });
+      this.readyResolve();
+      return;
+    }
+
+    // destroy() may have been called while fetchConfig() was in
+    // flight. The host is already detached; installing DOM, media-
+    // query, and keyboard listeners here would leak with no teardown
+    // path. `ready` was resolved in destroy(), so just bail.
+    if (this.destroyed) {
+      this.readyResolve();
       return;
     }
 
     const branding = this.config.branding;
     const position = this.widgetConfig.branding?.position ?? branding.position;
+    // Runtime theme override from the embed config wins over server-side.
+    this.resolvedTheme = this.widgetConfig.theme ?? branding.theme;
 
     if (this.config.sourceUrls) {
       setSourceUrls(this.config.sourceUrls);
     }
 
     const themeVars = buildThemeVars(branding.colors, {
-      theme: branding.theme,
+      theme: this.resolvedTheme,
       borderRadius: branding.borderRadius,
       fontFamily: branding.fontFamily,
     });
@@ -104,15 +220,17 @@ export class KodyWidget {
       this.host.setAttribute("position", "left");
     }
 
-    const resolvedTheme = branding.theme;
-    if (resolvedTheme === "auto") {
+    if (this.resolvedTheme === "auto") {
       this.darkModeQuery = window.matchMedia("(prefers-color-scheme: dark)");
       this.host.setAttribute("data-theme", this.darkModeQuery.matches ? "dark" : "light");
-      this.darkModeQuery.addEventListener("change", (e) => {
+      // Store the listener reference so destroy() / setTheme() can
+      // detach the same function (removeEventListener needs identity).
+      this.darkModeListener = (e) => {
         this.host.setAttribute("data-theme", e.matches ? "dark" : "light");
-      });
+      };
+      this.darkModeQuery.addEventListener("change", this.darkModeListener);
     } else {
-      this.host.setAttribute("data-theme", resolvedTheme);
+      this.host.setAttribute("data-theme", this.resolvedTheme);
     }
 
     this.bubble = createBubble(position, {
@@ -121,6 +239,7 @@ export class KodyWidget {
       icon: branding.bubbleIcon,
       iconUrl: branding.bubbleIconUrl,
       size: branding.bubbleSize,
+      strings: this.strings,
     });
 
     // Load multi-chat conversations
@@ -155,6 +274,7 @@ export class KodyWidget {
         ? () => this.deleteChat()
         : undefined,
       onToggleSidebar: () => this.toggleSidebar(),
+      strings: this.strings,
     });
 
     this.chatWindow.inputBar.input.placeholder = branding.inputPlaceholder;
@@ -185,22 +305,35 @@ export class KodyWidget {
     }, { once: true });
 
     const savedState = getWidgetState(this.widgetConfig.siteId);
-    if (savedState?.isOpen) {
+    const shouldOpen = this.widgetConfig.openOnLoad === true || savedState?.isOpen;
+    if (shouldOpen) {
       this.open();
+    }
+
+    if (this.widgetConfig.prefillMessage) {
+      this.prefillInput(this.widgetConfig.prefillMessage);
     }
 
     this.saveStateOnUnload();
     this.setupMobileHandlers();
+    this.installKeyboardShortcut();
 
-    const showAttention = !savedState?.isOpen && this.messages.length === 0;
-    this.stopAttention = startBubbleAttention(this.bubble, this.shadow, {
-      enabled: showAttention,
-      message: branding.tagline
-        ? `${branding.tagline} — chat with me!`
-        : "Need help? Chat with me!",
-      delayMs: 5000,
-      intervalMs: 10000,
-    });
+    const showAttention = !shouldOpen && this.messages.length === 0;
+    this.stopAttention = startBubbleAttention(
+      this.bubble,
+      this.shadow,
+      {
+        enabled: showAttention,
+        message: branding.tagline
+          ? `${branding.tagline} — chat with me!`
+          : this.strings.bubble.tooltip,
+        delayMs: 5000,
+        intervalMs: 10000,
+      },
+      this.strings,
+    );
+
+    this.readyResolve();
   }
 
   private showWelcome(): void {
@@ -249,6 +382,18 @@ export class KodyWidget {
     const handler = () => this.saveState();
     window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
+    // Track the teardown so destroy() can detach the same function
+    // reference; removeEventListener relies on identity.
+    this.lifecycleTeardowns.push(() => {
+      window.removeEventListener("beforeunload", handler);
+      window.removeEventListener("pagehide", handler);
+    });
+  }
+
+  private installKeyboardShortcut(): void {
+    const chords = parseShortcutSpec(this.widgetConfig.keyboardShortcut);
+    if (!chords) return;
+    this.keyboardTeardown = installKeyboardShortcut(chords, () => this.toggle());
   }
 
   private setupMobileHandlers(): void {
@@ -256,11 +401,18 @@ export class KodyWidget {
     const windowEl = this.chatWindow.element;
     const isMobile = () => window.innerWidth <= 480;
 
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", () => {
+    const viewport = window.visualViewport;
+    if (viewport) {
+      const onResize = () => {
         if (!isMobile() || !this.isOpen) return;
-        windowEl.style.height = `${window.visualViewport!.height}px`;
+        windowEl.style.height = `${viewport.height}px`;
         this.chatWindow?.scrollToBottom();
+      };
+      viewport.addEventListener("resize", onResize);
+      // Track the teardown so destroy() can detach the same function
+      // reference; removeEventListener relies on identity.
+      this.lifecycleTeardowns.push(() => {
+        viewport.removeEventListener("resize", onResize);
       });
     }
 
@@ -296,28 +448,76 @@ export class KodyWidget {
   }
 
   open(): void {
+    if (this.destroyed) return;
     if (this.isOpen || !this.chatWindow || !this.bubble) return;
     this.isOpen = true;
     this.chatWindow.setOpen(true);
-    setBubbleIcon(this.bubble, true);
+    setBubbleIcon(this.bubble, true, this.strings);
     this.unreadCount = 0;
     setBubbleBadge(this.bubble, 0);
     const win = this.chatWindow;
-    const onEnd = () => {
-      win.element.removeEventListener("transitionend", onEnd);
-      win.scrollToBottom();
-      win.inputBar.input.focus();
+    // Guard the trap install so transitionend and the fallback timer can
+    // both run, but only the first one to fire actually installs the
+    // trap. Without this, a rapid open/close/open cycle could leak a
+    // keydown listener (e.g. when a keyboard shortcut toggles fast).
+    const installTrap = (): void => {
+      if (this.focusTrapTeardown) return;
+      focusFirst(win.element, win.inputBar.input);
+      this.focusTrapTeardown = installFocusTrap({
+        container: win.element,
+        onEscape: () => this.close(),
+      });
     };
-    win.element.addEventListener("transitionend", onEnd);
+    const onEnd = () => {
+      // If the widget was closed while the opening transition was
+      // still running, the close transition will fire its own
+      // `transitionend`. Ignore the stale open listener so we don't
+      // run scrollToBottom / installTrap on a closing dialog — focus
+      // could otherwise get trapped inside a hidden element.
+      if (!this.isOpen) return;
+      win.element.removeEventListener("transitionend", onEnd);
+      this.openTransitionEnd = null;
+      win.scrollToBottom();
+      installTrap();
+    };
+    this.openTransitionEnd = onEnd;
+    win.element.addEventListener("transitionend", onEnd, { once: true });
+    // Fallback in case the transitionend event never fires (e.g. reduced motion).
+    // Track the timer so close() can cancel a stale one from a prior open cycle.
+    this.openTransitionTimer = setTimeout(() => {
+      this.openTransitionTimer = null;
+      if (this.isOpen) installTrap();
+    }, 260);
     for (const cb of this.openCallbacks) cb();
+    this.emitter.emit({ type: "open" });
   }
 
   close(): void {
     if (!this.isOpen || !this.chatWindow || !this.bubble) return;
     this.isOpen = false;
     this.chatWindow.setOpen(false);
-    setBubbleIcon(this.bubble, false);
+    setBubbleIcon(this.bubble, false, this.strings);
+    if (this.openTransitionTimer) {
+      clearTimeout(this.openTransitionTimer);
+      this.openTransitionTimer = null;
+    }
+    // The opening-transition listener might still be pending. Detach
+    // it with the same function reference we stored, so the close
+    // transition's `transitionend` doesn't re-run scrollToBottom /
+    // installTrap on a closed window.
+    if (this.openTransitionEnd) {
+      this.chatWindow.element.removeEventListener("transitionend", this.openTransitionEnd);
+      this.openTransitionEnd = null;
+    }
+    if (this.focusTrapTeardown) {
+      this.focusTrapTeardown();
+      this.focusTrapTeardown = null;
+    }
+    // Return focus to the bubble so keyboard users can re-open the
+    // chat without tabbing through the whole page (WCAG 2.4.3).
+    this.bubble.focus();
     for (const cb of this.closeCallbacks) cb();
+    this.emitter.emit({ type: "close" });
   }
 
   toggle(): void {
@@ -329,9 +529,43 @@ export class KodyWidget {
   }
 
   destroy(): void {
+    // Mark destroyed FIRST so an `init()` continuation (e.g. a
+    // pending `fetchConfig()` resolving) can short-circuit and not
+    // install listeners on the host we're about to detach.
+    // Also resolve `ready` so callers awaiting it don't hang.
+    this.destroyed = true;
+    this.readyResolve();
     this.saveState();
     this.abortController?.abort();
     this.stopAttention?.();
+    if (this.openTransitionTimer) {
+      clearTimeout(this.openTransitionTimer);
+      this.openTransitionTimer = null;
+    }
+    if (this.openTransitionEnd && this.chatWindow) {
+      this.chatWindow.element.removeEventListener("transitionend", this.openTransitionEnd);
+      this.openTransitionEnd = null;
+    }
+    if (this.focusTrapTeardown) {
+      this.focusTrapTeardown();
+      this.focusTrapTeardown = null;
+    }
+    if (this.keyboardTeardown) {
+      this.keyboardTeardown();
+      this.keyboardTeardown = null;
+    }
+    if (this.darkModeQuery && this.darkModeListener) {
+      this.darkModeQuery.removeEventListener("change", this.darkModeListener);
+      this.darkModeQuery = null;
+      this.darkModeListener = null;
+    }
+    // Detach the page-lifecycle + visualViewport listeners installed
+    // by init(). Each teardown removes the same function reference
+    // we registered, then we clear the list so a remount starts
+    // fresh and a destroyed widget can't keep writing stale state.
+    for (const teardown of this.lifecycleTeardowns) teardown();
+    this.lifecycleTeardowns = [];
+    this.emitter.removeAll();
     this.host.remove();
   }
 
@@ -341,6 +575,116 @@ export class KodyWidget {
 
   onClose(callback: () => void): void {
     this.closeCallbacks.push(callback);
+  }
+
+  /**
+   * Send a message as if the user typed it. Resolves when the message
+   * is queued for delivery — the response is delivered via the
+   * `message` event on the emitter. Throws if the widget is not
+   * initialised yet.
+   */
+  sendMessage(text: string): Promise<void> {
+    if (this.destroyed) {
+      return Promise.reject(new Error("[Kody] Widget has been destroyed; create a new instance to send messages"));
+    }
+    if (!this.config) {
+      return Promise.reject(new Error("[Kody] Widget not ready; await Kody.ready"));
+    }
+    if (!text || typeof text !== "string") {
+      return Promise.reject(new Error("[Kody] sendMessage requires a non-empty string"));
+    }
+    if (this.isStreaming) {
+      // Programmatic send during streaming was previously a silent
+      // no-op: handleSend() returns immediately when isStreaming, but
+      // sendMessage() still resolved. Surface a clear rejection so
+      // host-page callers can wait for the current response instead
+      // of believing their message was sent.
+      return Promise.reject(new Error("[Kody] A response is already in flight; await it before sending again"));
+    }
+    if (!this.isOpen) {
+      this.open();
+    }
+    this.handleSend(text);
+    return Promise.resolve();
+  }
+
+  /**
+   * Put text in the input without sending. The user can edit and
+   * submit manually. Opens the chat if it isn't open.
+   */
+  prefillInput(text: string): void {
+    if (!this.chatWindow) return;
+    if (!this.isOpen) this.open();
+    this.chatWindow.setPrefill(text);
+  }
+
+  /**
+   * Attach metadata to every future message. The value is sent to the
+   * server as the `x-kody-user-context` header. Pass `undefined` to
+   * clear.
+   */
+  setUserContext(ctx: Record<string, unknown> | undefined): void {
+    this.client.setUserContext(ctx);
+  }
+
+  /**
+   * Mark a known user. The userId is sent with every request as
+   * `x-kody-user-id`; traits are JSON-encoded into
+   * `x-kody-user-traits`. Pass `undefined` as the userId to clear
+   * the identity — subsequent requests will omit the user headers.
+   */
+  identify(userId: string | undefined, traits?: Record<string, unknown>): void {
+    this.client.setIdentity(
+      userId === undefined ? undefined : { userId, traits },
+    );
+  }
+
+  /**
+   * Switch the active locale. Currently only ships `en`; calling this
+   * with another locale is accepted but falls back to English until a
+   * translation is added.
+   */
+  setLocale(locale: string): void {
+    this.locale = locale;
+    this.strings = resolveStrings(locale);
+    // Re-render visible strings by rebuilding header labels.
+    if (this.chatWindow) {
+      this.chatWindow.inputBar.input.placeholder = this.config?.branding.inputPlaceholder ?? this.strings.input.placeholder;
+      this.chatWindow.inputBar.input.setAttribute("aria-label", this.strings.input.placeholder);
+    }
+  }
+
+  /**
+   * Runtime override of the theme. Re-runs the same logic init() used
+   * to set `data-theme` on the host. Pass "auto" to follow the OS.
+   */
+  setTheme(theme: "light" | "dark" | "auto"): void {
+    if (this.destroyed) return;
+    this.resolvedTheme = theme;
+    // Detach any prior auto listener before re-binding or switching away.
+    if (this.darkModeQuery && this.darkModeListener) {
+      this.darkModeQuery.removeEventListener("change", this.darkModeListener);
+      this.darkModeQuery = null;
+      this.darkModeListener = null;
+    }
+    if (theme === "auto") {
+      this.darkModeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      this.host.setAttribute("data-theme", this.darkModeQuery.matches ? "dark" : "light");
+      this.darkModeListener = (e) => {
+        this.host.setAttribute("data-theme", e.matches ? "dark" : "light");
+      };
+      this.darkModeQuery.addEventListener("change", this.darkModeListener);
+    } else {
+      this.host.setAttribute("data-theme", theme);
+    }
+  }
+
+  /**
+   * Subscribe to a widget event. Returns an unsubscribe function so
+   * listeners can be removed with a single call.
+   */
+  on(name: EventName, listener: (payload: EventPayload) => void): () => void {
+    return this.emitter.on(name, listener);
   }
 
   private saveState(): void {
@@ -506,6 +850,7 @@ export class KodyWidget {
     if (this.sessionId) {
       this.client.sendFeedback(this.sessionId, messageIndex, rating);
     }
+    this.emitter.emit({ type: "feedback", rating, messageIndex });
   }
 
   private async handleSend(message: string): Promise<void> {
@@ -528,6 +873,7 @@ export class KodyWidget {
     }
 
     this.messages.push({ role: "user", content: message });
+    this.emitter.emit({ type: "message", role: "user", content: message });
     this.persistMessages();
 
     const userMsg = renderMessage({ role: "user", content: message });
@@ -592,6 +938,7 @@ export class KodyWidget {
                 },
               );
               streaming.element.replaceWith(finalMsg);
+              this.emitter.emit({ type: "message", role: "assistant", content: streamedContent });
 
               if (!this.isOpen && this.bubble) {
                 this.unreadCount++;
@@ -616,7 +963,7 @@ export class KodyWidget {
             break;
           }
 
-          case "rate_limited":
+          case "rate_limited": {
             if (!typingRemoved) {
               typing.remove();
               typingRemoved = true;
@@ -624,9 +971,11 @@ export class KodyWidget {
             this.showRateLimitMessage(event.retryAfterSeconds);
             this.isStreaming = false;
             this.chatWindow.setLoading(false);
+            this.emitter.emit({ type: "error", message: "rate_limited" });
             break;
+          }
 
-          case "blocked":
+          case "blocked": {
             if (!typingRemoved) {
               typing.remove();
               typingRemoved = true;
@@ -635,15 +984,17 @@ export class KodyWidget {
             this.isStreaming = false;
             this.chatWindow.setLoading(false);
             break;
+          }
 
           case "error":
             if (!typingRemoved) {
               typing.remove();
               typingRemoved = true;
             }
-            this.appendAssistantMessage("Something went wrong. Please try again.");
+            this.appendAssistantMessage(this.strings.messages.errorGeneric);
             this.isStreaming = false;
             this.chatWindow.setLoading(false);
+            this.emitter.emit({ type: "error", message: event.message });
             break;
 
           case "tool_start": {
@@ -729,10 +1080,10 @@ export class KodyWidget {
     let remaining = retryAfterSeconds;
     const friendly =
       remaining >= 3600
-        ? "You've reached the daily message limit."
+        ? this.strings.messages.rateLimitDaily
         : remaining >= 60
-          ? `Too many messages. Please wait ${Math.ceil(remaining / 60)} minute${Math.ceil(remaining / 60) > 1 ? "s" : ""}.`
-          : `Too many messages. Please wait ${remaining} seconds.`;
+          ? this.strings.messages.rateLimitMinutes(Math.ceil(remaining / 60))
+          : this.strings.messages.rateLimitSeconds(remaining);
 
     const msg = renderMessage({ role: "assistant", content: friendly });
     this.chatWindow.messagesContainer.appendChild(msg);
@@ -746,10 +1097,10 @@ export class KodyWidget {
         remaining--;
         if (remaining <= 0) {
           clearInterval(interval);
-          contentEl.textContent = "You can send messages again now.";
+          contentEl.textContent = this.strings.messages.rateLimitReady;
           return;
         }
-        contentEl.textContent = `Too many messages. Please wait ${remaining} second${remaining !== 1 ? "s" : ""}.`;
+        contentEl.textContent = this.strings.messages.rateLimitSeconds(remaining);
       }, 1000);
     }
   }

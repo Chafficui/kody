@@ -2,6 +2,7 @@
 
 import { el, text, on } from "../utils/dom.js";
 import { sanitizeText } from "../utils/sanitize.js";
+import type { WidgetStrings } from "../i18n/en.js";
 
 export interface ChatWindowOptions {
   name: string;
@@ -12,6 +13,7 @@ export interface ChatWindowOptions {
   onNewChat: () => void;
   onDeleteChat?: () => void;
   onToggleSidebar?: () => void;
+  strings: WidgetStrings;
 }
 
 export interface ChatWindow {
@@ -21,6 +23,7 @@ export interface ChatWindow {
   setOpen(open: boolean): void;
   setLoading(loading: boolean): void;
   scrollToBottom(): void;
+  setPrefill(text: string): void;
 }
 
 function createNewChatSvg(): SVGSVGElement {
@@ -117,7 +120,7 @@ function createMenuSvg(): SVGSVGElement {
  * Create the main chat window.
  */
 export function createChatWindow(options: ChatWindowOptions): ChatWindow {
-  const { name, tagline, position, onClose, onSend, onNewChat, onDeleteChat, onToggleSidebar } = options;
+  const { name, tagline, position, onClose, onSend, onNewChat, onDeleteChat, onToggleSidebar, strings } = options;
 
   // ── Header ───────────────────────────────────────────────────────────────
   const titleEl = el("span", { class: "kody-header-name" }, [name]);
@@ -131,15 +134,15 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
 
   const newChatBtn = el("button", {
     class: "kody-header-btn",
-    "aria-label": "New chat",
-    title: "New chat",
+    "aria-label": strings.header.newChat,
+    title: strings.header.newChat,
   });
   newChatBtn.appendChild(createNewChatSvg());
   on(newChatBtn, "click", () => onNewChat());
 
   const closeBtn = el("button", {
     class: "kody-header-btn",
-    "aria-label": "Close chat",
+    "aria-label": strings.header.closeChat,
   });
   closeBtn.appendChild(createCloseSvg());
   on(closeBtn, "click", () => onClose());
@@ -148,8 +151,8 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
   if (onToggleSidebar) {
     const sidebarBtn = el("button", {
       class: "kody-header-btn",
-      "aria-label": "Conversations",
-      title: "Conversations",
+      "aria-label": strings.header.conversations,
+      title: strings.header.conversations,
     });
     sidebarBtn.appendChild(createMenuSvg());
     on(sidebarBtn, "click", () => onToggleSidebar());
@@ -159,8 +162,8 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
   if (onDeleteChat) {
     const deleteBtn = el("button", {
       class: "kody-header-btn",
-      "aria-label": "Delete conversation",
-      title: "Delete conversation",
+      "aria-label": strings.header.deleteConversation,
+      title: strings.header.deleteConversation,
     });
     const deleteSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     deleteSvg.setAttribute("width", "16");
@@ -189,18 +192,19 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
   const messagesContainer = el("div", {
     class: "kody-messages",
     role: "log",
-    "aria-label": "Chat messages",
+    "aria-label": strings.aria.chatMessages,
     "aria-live": "polite",
   });
 
   // ── Input bar ────────────────────────────────────────────────────────────
   const input = document.createElement("textarea");
   input.className = "kody-input";
-  input.placeholder = "Type a message...";
+  input.placeholder = strings.input.placeholder;
   input.rows = 1;
   input.cols = 1;
   input.wrap = "soft";
   input.autocomplete = "off";
+  input.setAttribute("aria-label", strings.input.placeholder);
 
   function autoResize(): void {
     input.style.height = "auto";
@@ -213,7 +217,7 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
 
   const sendBtn = el("button", {
     class: "kody-send-btn",
-    "aria-label": "Send message",
+    "aria-label": strings.input.send,
   });
   sendBtn.appendChild(createSendSvg());
 
@@ -242,7 +246,8 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
   const windowEl = el("div", {
     class: "kody-window",
     role: "dialog",
-    "aria-label": `Chat with ${name}`,
+    "aria-modal": "true",
+    "aria-label": strings.aria.chatWith(name),
   }, [header, messagesContainer, inputBar]);
 
   if (position === "bottom-left") {
@@ -270,6 +275,12 @@ export function createChatWindow(options: ChatWindowOptions): ChatWindow {
 
     scrollToBottom(): void {
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    },
+
+    setPrefill(text: string): void {
+      input.value = text;
+      autoResize();
+      input.focus();
     },
   };
 }

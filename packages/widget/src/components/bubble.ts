@@ -1,6 +1,7 @@
 /** Floating chat bubble button with attention animations. */
 
 import { el, on } from "../utils/dom.js";
+import type { WidgetStrings } from "../i18n/en.js";
 
 export interface BubbleCallbacks {
   onToggle: () => void;
@@ -130,16 +131,24 @@ let currentIconUrl: string | undefined;
 export function createBubble(
   position: "bottom-right" | "bottom-left",
   callbacks: BubbleCallbacks,
-  options?: { icon?: BubbleIconType; iconUrl?: string; size?: BubbleSizeType },
+  options?: {
+    icon?: BubbleIconType;
+    iconUrl?: string;
+    size?: BubbleSizeType;
+    strings?: WidgetStrings;
+  },
 ): HTMLButtonElement {
   const icon = options?.icon ?? "chat";
   const size = options?.size ?? "md";
+  const strings = options?.strings;
   currentIcon = icon;
   currentIconUrl = options?.iconUrl;
 
+  const openLabel = strings?.bubble.open ?? "Open chat";
+
   const button = el("button", {
     class: "kody-bubble",
-    "aria-label": "Open chat",
+    "aria-label": openLabel,
     "data-size": size,
   });
 
@@ -153,18 +162,25 @@ export function createBubble(
   return button;
 }
 
-export function setBubbleIcon(bubble: HTMLButtonElement, isOpen: boolean): void {
+export function setBubbleIcon(
+  bubble: HTMLButtonElement,
+  isOpen: boolean,
+  strings?: WidgetStrings,
+): void {
   const badge = bubble.querySelector(".kody-badge");
   while (bubble.firstChild) {
     bubble.removeChild(bubble.firstChild);
   }
 
+  const openLabel = strings?.bubble.open ?? "Open chat";
+  const closeLabel = strings?.bubble.close ?? "Close chat";
+
   if (isOpen) {
     bubble.appendChild(createSvgIcon(CLOSE_ICON_PATH, true));
-    bubble.setAttribute("aria-label", "Close chat");
+    bubble.setAttribute("aria-label", closeLabel);
   } else {
     bubble.appendChild(createBubbleIconElement(currentIcon, currentIconUrl));
-    bubble.setAttribute("aria-label", "Open chat");
+    bubble.setAttribute("aria-label", openLabel);
   }
 
   if (badge) {
@@ -192,12 +208,15 @@ export function startBubbleAttention(
   bubble: HTMLButtonElement,
   shadow: ShadowRoot,
   config: AttentionConfig,
+  strings?: WidgetStrings,
 ): () => void {
   if (!config.enabled) return () => {};
 
   const delay = config.delayMs ?? 5000;
   const interval = config.intervalMs ?? 8000;
-  const message = config.message ?? "Need help? 👋";
+  const message = config.message ?? strings?.bubble.tooltip ?? "Need help? 👋";
+  const dismissLabel = strings?.bubble.dismiss ?? "Dismiss";
+  const tooltipLabel = strings?.aria.tooltip ?? "Chat invitation";
 
   let tooltip: HTMLDivElement | null = null;
   let wiggleTimer: ReturnType<typeof setInterval> | null = null;
@@ -212,13 +231,13 @@ export function startBubbleAttention(
 
   function showTooltip(): void {
     if (stopped || tooltip) return;
-    tooltip = el("div", { class: "kody-tooltip" }, [message]) as HTMLDivElement;
+    tooltip = el("div", { class: "kody-tooltip", role: "tooltip", "aria-label": tooltipLabel }, [message]) as HTMLDivElement;
 
     if (bubble.dataset.position === "left") {
       tooltip.classList.add("kody-tooltip--left");
     }
 
-    const dismiss = el("button", { class: "kody-tooltip-close", "aria-label": "Dismiss" }, ["×"]);
+    const dismiss = el("button", { class: "kody-tooltip-close", "aria-label": dismissLabel }, ["×"]);
     on(dismiss, "click", (e: Event) => {
       e.stopPropagation();
       hideTooltip();

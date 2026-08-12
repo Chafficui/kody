@@ -54,6 +54,11 @@ export const BASE_STYLES = /* css */ `
   transform: scale(0.96);
 }
 
+.kody-bubble:focus-visible {
+  outline: 2px solid var(--kody-primary);
+  outline-offset: 2px;
+}
+
 .kody-bubble svg {
   width: 24px;
   height: 24px;
@@ -1031,6 +1036,54 @@ a.kody-source-link:hover {
 
   .kody-bubble--pulse {
     animation: none;
+  }
+}
+
+/* ── High contrast ── */
+
+@media (prefers-contrast: more) {
+  .kody-bubble {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+  .kody-window {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
+  .kody-input,
+  .kody-ticket-form input,
+  .kody-ticket-form textarea {
+    /* Inputs ship border:none in the base styles, so border-width alone
+       is invisible. Restore a visible style. */
+    border: 2px solid currentColor;
+  }
+  /* The base input has outline:none for a clean look; in high-contrast
+     mode that's a keyboard-focus regression. Bring back a visible ring. */
+  .kody-input:focus,
+  .kody-ticket-form input:focus,
+  .kody-ticket-form textarea:focus {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+  .kody-message-content th,
+  .kody-message-content td {
+    border-width: 2px;
+  }
+  .kody-header-btn,
+  .kody-send-btn,
+  .kody-suggestion-btn,
+  .kody-starter-btn {
+    /* These buttons also default to border:none — pair the width with
+       a visible style so the high-contrast outline is actually drawn. */
+    border: 2px solid currentColor;
+  }
+  /* Focus indicator on the icon buttons (also disabled by default). */
+  .kody-header-btn:focus-visible,
+  .kody-send-btn:focus-visible,
+  .kody-suggestion-btn:focus-visible,
+  .kody-starter-btn:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
   }
 }
 

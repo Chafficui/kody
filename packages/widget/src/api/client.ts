@@ -55,14 +55,95 @@ export type ChatEvent =
   | { type: "sources"; chunks: Array<{ title: string; url?: string; score: number }> }
   | { type: "suggestions"; suggestions: string[] };
 
+import { isTrustedServerUrl } from "../utils/url.js";
+
+export interface IdentifyTraits {
+  userId: string;
+  traits?: Record<string, unknown>;
+}
+
 export class KodyApiClient {
+  private userContext: Record<string, unknown> | undefined;
+  private identity: IdentifyTraits | undefined;
+  /**
+   * True only when `baseUrl` is HTTPS or an explicit loopback host.
+   * Identity / context headers are withheld for any other plain-HTTP
+   * origin so we never leak `x-kody-user-id` etc. to a non-trusted
+   * upstream.
+   */
+  private readonly allowIdentity: boolean;
+
   constructor(
     private baseUrl: string,
     private siteId: string,
-  ) {}
+  ) {
+    this.allowIdentity = isTrustedServerUrl(baseUrl);
+  }
+
+  setUserContext(ctx: Record<string, unknown> | undefined): void {
+    this.userContext = ctx && Object.keys(ctx).length > 0 ? ctx : undefined;
+  }
+
+  setIdentity(identity: IdentifyTraits | undefined): void {
+    this.identity = identity;
+  }
+
+  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-kody-site-id": this.siteId,
+    };
+    if (extra) Object.assign(headers, extra);
+    return headers;
+  }
+
+  /**
+   * Build the per-message header set: site id + the current identity
+   * (user id + traits) and userContext, with a bounded size check so
+   * a single misconfigured site can't blow up the request line.
+   *
+   * Identity and context headers are only attached when the resolved
+   * base URL is trusted (HTTPS or an explicit loopback exception).
+   * Otherwise we forward only the public site id — the chat itself
+   * still works, but no user-identifying data leaves the page.
+   */
+  private buildMessageHeaders(): Record<string, string> {
+    const headers: Record<string, string> = this.buildHeaders();
+    if (!this.allowIdentity) return headers;
+    if (this.identity) {
+      headers["x-kody-user-id"] = this.identity.userId;
+      if (this.identity.traits) {
+        const traits = this.trySerialize(this.identity.traits, 4096);
+        if (traits !== undefined) headers["x-kody-user-traits"] = traits;
+      }
+    }
+    if (this.userContext) {
+      const ctx = this.trySerialize(this.userContext, 4096);
+      if (ctx !== undefined) headers["x-kody-user-context"] = ctx;
+    }
+    return headers;
+  }
+
+  private trySerialize(value: unknown, maxBytes: number): string | undefined {
+    let raw: string;
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+    if (raw === undefined) return undefined;
+    // Measure UTF-8 bytes, not JS string length. The HTTP header has
+    // a byte budget; a non-ASCII character can be 1–4 bytes, so
+    // `raw.length` systematically over-states the size of CJK /
+    // emoji content and would let oversized payloads through.
+    if (new TextEncoder().encode(raw).byteLength > maxBytes) return undefined;
+    return raw;
+  }
 
   async fetchConfig(): Promise<PublicSiteConfig> {
-    const res = await fetch(`${this.baseUrl}/api/config/${this.siteId}`);
+    const res = await fetch(`${this.baseUrl}/api/config/${this.siteId}`, {
+      headers: this.buildHeaders(),
+    });
     if (!res.ok) {
       throw new Error(`Failed to fetch config: ${res.status} ${res.statusText}`);
     }
@@ -73,7 +154,12 @@ export class KodyApiClient {
     try {
       await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
         method: "DELETE",
-        headers: { "x-kody-site-id": this.siteId },
+        headers: this.buildMessageHeaders(),
+        // Identity-bearing request: do not follow redirects. Fetch
+        // strips `Authorization` on cross-origin redirect but would
+        // forward our custom `x-kody-user-*` headers, leaking identity
+        // to a different host if the server ever redirects.
+        redirect: "error",
       });
     } catch {
       // best-effort deletion
@@ -88,10 +174,10 @@ export class KodyApiClient {
     try {
       await fetch(`${this.baseUrl}/api/feedback`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-kody-site-id": this.siteId,
-        },
+        headers: this.buildMessageHeaders(),
+        // Identity-bearing request: do not follow redirects. See
+        // deleteSession() for the rationale.
+        redirect: "error",
         body: JSON.stringify({
           siteId: this.siteId,
           sessionId,
@@ -118,10 +204,10 @@ export class KodyApiClient {
     try {
       res = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-kody-site-id": this.siteId,
-        },
+        headers: this.buildMessageHeaders(),
+        // Identity-bearing request: do not follow redirects. See
+        // deleteSession() for the rationale.
+        redirect: "error",
         body: JSON.stringify({
           siteId: this.siteId,
           sessionId,
