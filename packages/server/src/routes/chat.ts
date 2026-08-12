@@ -415,7 +415,15 @@ export function createChatRouter(
             if (!abortController.signal.aborted) abortController.abort();
             return false;
           }
-          return false;
+          // Under-limit backpressure: Node accepted the chunk
+          // and is holding it; the next safeWrite will resume
+          // naturally. Return `true` so the caller (e.g. the
+          // cache-hit replay loop) keeps serializing the
+          // remaining chunks — returning `false` here would
+          // make the replay bail out after the first
+          // under-limit write, even though the connection is
+          // still healthy.
+          return true;
         }
         return true;
       } catch {
@@ -830,12 +838,21 @@ export function createChatRouter(
  * so the widget renders the replayed text the same way as a live
  * stream. The caller is responsible for emitting the trailing
  * `done` / `suggestions` events.
+ *
+ * The `write` callback's return value is honored: a `false`
+ * means the SSE socket is terminal (closed / aborted /
+ * over-limit backpressure) and we stop replaying immediately
+ * so we do not keep serializing chunks into a dead response.
+ * Under-limit backpressure returns `true` (the chunk was
+ * accepted, just queued) and the loop continues — see
+ * `safeWrite` for the distinction.
  */
 function replayContentAsDeltas(write: (chunk: string) => boolean, content: string): void {
   const chunkSize = 32;
   for (let i = 0; i < content.length; i += chunkSize) {
     const slice = content.slice(i, i + chunkSize);
-    write(`data: ${JSON.stringify({ type: "delta", content: slice })}\n\n`);
+    const ok = write(`data: ${JSON.stringify({ type: "delta", content: slice })}\n\n`);
+    if (!ok) return;
   }
 }
 
