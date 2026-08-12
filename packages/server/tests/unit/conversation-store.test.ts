@@ -78,6 +78,65 @@ describe("ConversationStore", () => {
     expect(owned?.sessionId).toBe(first.sessionId);
   });
 
+  it("getSystemPromptFingerprint returns undefined when no fingerprint is recorded", () => {
+    store = new ConversationStore();
+    const conv = store.getOrCreate("site-1");
+    expect(store.getSystemPromptFingerprint(conv.sessionId)).toBeUndefined();
+  });
+
+  it("setSystemPromptFingerprint records the supplied value", () => {
+    store = new ConversationStore();
+    const conv = store.getOrCreate("site-1");
+    store.setSystemPromptFingerprint(conv.sessionId, "fp-1");
+    expect(store.getSystemPromptFingerprint(conv.sessionId)).toBe("fp-1");
+  });
+
+  it("setSystemPromptFingerprint is a no-op for an unknown sessionId", () => {
+    store = new ConversationStore();
+    // Should not throw and should not create a conversation.
+    store.setSystemPromptFingerprint("does-not-exist", "fp-x");
+    expect(store.getSystemPromptFingerprint("does-not-exist")).toBeUndefined();
+  });
+
+  it("updateSystemPrompt replaces the leading system message in place", () => {
+    store = new ConversationStore();
+    const conv = store.getOrCreate("site-1");
+    store.addMessage(conv.sessionId, { role: "system", content: "old prompt" });
+    store.addMessage(conv.sessionId, { role: "user", content: "hi" });
+    store.addMessage(conv.sessionId, { role: "assistant", content: "hello" });
+    store.setSystemPromptFingerprint(conv.sessionId, "fp-old");
+
+    store.updateSystemPrompt(conv.sessionId, "new prompt", "fp-new");
+
+    const messages = store.getMessages(conv.sessionId);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toEqual({ role: "system", content: "new prompt" });
+    expect(messages[1]).toEqual({ role: "user", content: "hi" });
+    expect(messages[2]).toEqual({ role: "assistant", content: "hello" });
+    expect(store.getSystemPromptFingerprint(conv.sessionId)).toBe("fp-new");
+  });
+
+  it("updateSystemPrompt is a no-op when there is no system message", () => {
+    store = new ConversationStore();
+    const conv = store.getOrCreate("site-1");
+    store.addMessage(conv.sessionId, { role: "user", content: "hi" });
+
+    store.updateSystemPrompt(conv.sessionId, "new prompt", "fp-new");
+
+    // The user turn is left untouched and the fingerprint
+    // was never recorded.
+    const messages = store.getMessages(conv.sessionId);
+    expect(messages).toEqual([{ role: "user", content: "hi" }]);
+    expect(store.getSystemPromptFingerprint(conv.sessionId)).toBeUndefined();
+  });
+
+  it("updateSystemPrompt is a no-op for an unknown sessionId", () => {
+    store = new ConversationStore();
+    // Should not throw and should not create a conversation.
+    store.updateSystemPrompt("does-not-exist", "new prompt", "fp-new");
+    expect(store.has("does-not-exist")).toBe(false);
+  });
+
   it("adds messages to a conversation", () => {
     store = new ConversationStore();
     const conv = store.getOrCreate("site-1");

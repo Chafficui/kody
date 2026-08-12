@@ -970,14 +970,23 @@ function persistCacheEntry(params: {
  *      `addMessage`. The list is empty so "append" and
  *      "prepend" produce identical results.
  *
- *   2. **Existing system message**. The prompt was written
- *      on turn one and lives at the head of the transcript.
- *      Reuse its content verbatim so the response-cache
- *      fingerprint stays stable across turns and a config
- *      change that would rebuild the prompt is correctly
- *      reflected in the next turn (we always re-check on
- *      the *next* request, not the current one — see
- *      `buildSiteFingerprint`).
+ *   2. **Existing system message with a matching config
+ *      fingerprint**. The prompt was written on turn one and
+ *      the site config has not changed since. Reuse the
+ *      content verbatim so the response-cache fingerprint
+ *      stays stable across turns — the user sees a
+ *      consistent persona from one turn to the next.
+ *
+ *   2b. **Existing system message with a stale config
+ *      fingerprint**. The site config changed (admin edited
+ *      personality, guardrails, knowledge sources, or
+ *      `ai.systemPromptPrefix`) since the prompt was
+ *      written. Rebuild the prompt, replace the leading
+ *      system message in place via `updateSystemPrompt`,
+ *      and persist the new fingerprint. The transcript
+ *      below the system message is left intact — the
+ *      visitor's previous turns are still meaningful in
+ *      the context of the new persona.
  *
  *   3. **Legacy / upgrade fallback**. The conversation has
  *      user or assistant turns but no system message —
@@ -1012,11 +1021,35 @@ async function buildAndStoreSystemPrompt(
     );
   }
 
-  // Branch 2: existing system message — reuse verbatim so the
-  // response-cache fingerprint stays stable.
+  // Branch 2 / 2b: existing system message — reuse it when the
+  // config fingerprint still matches, otherwise rebuild and
+  // replace in place. The fingerprint is hashed from the
+  // resolved system prompt plus the config slices that affect
+  // what the AI is asked to say; capturing it at build time
+  // and comparing on every subsequent turn is what lets us
+  // detect a mid-conversation admin edit (the previous
+  // implementation reused the stored prompt verbatim and
+  // therefore never noticed the config had changed).
   const existingSystem = conversation.messages.find((m) => m.role === "system");
   if (existingSystem) {
-    return existingSystem.content;
+    const currentFingerprint = buildSiteFingerprint(config, existingSystem.content);
+    const storedFingerprint = conversationStore.getSystemPromptFingerprint(sessionId);
+    if (storedFingerprint === currentFingerprint) {
+      return existingSystem.content;
+    }
+    // Fingerprint mismatch: rebuild from the current site
+    // config and replace the leading system message in
+    // place. The helper computes the new fingerprint from
+    // the freshly-built prompt (not the old one) and
+    // persists it so subsequent turns stay stable until the
+    // admin edits again.
+    return buildAndStoreSystemPromptForMode(
+      sessionId,
+      config,
+      knowledgeAssembler,
+      conversationStore,
+      "update",
+    );
   }
 
   // Branch 3: missing system message — recover and *prepend* so
@@ -1033,27 +1066,37 @@ async function buildAndStoreSystemPrompt(
 
 /**
  * Build a fresh system prompt from the current site config and
- * store it in the conversation, using `mode` to select whether
- * it is added to the tail (the brand-new-conversation path —
- * the list is empty so append and prepend are equivalent) or
- * prepended ahead of any existing turns (the
- * missing-system-message recovery path — a prepended prompt
- * ensures the model sees it first regardless of which turn the
- * conversation was on when the recovery happened).
+ * store it in the conversation. The `mode` argument selects
+ * which storage call to make:
  *
- * The prompt itself is built identically for both modes — the
- * only difference is the storage call. Routing both branches
- * through one helper keeps the prompt construction in a
- * single place so a future change (new `buildSystemPrompt`
+ *   - `"append"` — the brand-new-conversation path. The list
+ *     is empty so append and prepend are equivalent, and
+ *     append is the cheaper call.
+ *
+ *   - `"prepend"` — the missing-system-message recovery path.
+ *     A prepended prompt ensures the model sees it first
+ *     regardless of which turn the conversation was on when
+ *     the recovery happened.
+ *
+ *   - `"update"` — the stale-fingerprint path. The leading
+ *     system message is replaced in place via
+ *     `ConversationStore.updateSystemPrompt`, which also
+ *     persists the new configuration fingerprint so the
+ *     next turn recognizes the prompt as up to date.
+ *
+ * The prompt itself is built identically for every mode — the
+ * only difference is the storage call. Routing all three
+ * branches through one helper keeps the prompt construction
+ * in a single place so a future change (new `buildSystemPrompt`
  * input, additional knowledge assembler pass, etc.) is made
- * once and applies to both.
+ * once and applies to all three.
  */
 async function buildAndStoreSystemPromptForMode(
   sessionId: string,
   config: SiteConfig,
   knowledgeAssembler: KnowledgeAssembler,
   conversationStore: ConversationStore,
-  mode: "append" | "prepend",
+  mode: "append" | "prepend" | "update",
 ): Promise<string> {
   const enrichedSources = await knowledgeAssembler.assemble(
     config.knowledge.sources,
@@ -1070,10 +1113,21 @@ async function buildAndStoreSystemPromptForMode(
     systemPromptPrefix: config.ai.systemPromptPrefix,
   });
   const message: ChatMessage = { role: "system", content: systemPrompt };
+  // The fingerprint is hashed from the prompt + the config
+  // slices that affect what the AI is asked to say. Recording
+  // it on every install / replace path means the next turn
+  // can detect a mid-conversation admin edit by comparing
+  // the stored value against a freshly-computed one — see
+  // branch 2b in `buildAndStoreSystemPrompt`.
+  const fingerprint = buildSiteFingerprint(config, systemPrompt);
   if (mode === "prepend") {
     conversationStore.prependMessage(sessionId, message);
+    conversationStore.setSystemPromptFingerprint(sessionId, fingerprint);
+  } else if (mode === "update") {
+    conversationStore.updateSystemPrompt(sessionId, systemPrompt, fingerprint);
   } else {
     conversationStore.addMessage(sessionId, message);
+    conversationStore.setSystemPromptFingerprint(sessionId, fingerprint);
   }
   return systemPrompt;
 }
