@@ -437,8 +437,6 @@ export function createChatRouter(
       }
     };
 
-    const capabilities = await probeCapabilities(config.ai);
-
     // Wrap the entire streaming body (probe → tool / RAG / plain
     // branch, including the cache-hit early return) in a single
     // `try { ... } finally { detachCloseListeners(); }` so the
@@ -451,7 +449,14 @@ export function createChatRouter(
     // handler and skip the detach — leaving the listeners wired
     // up against the (potentially keep-alive) socket and
     // accumulating across requests.
+    //
+    // The `try` is opened BEFORE `probeCapabilities` so a probe
+    // rejection (bad base URL, missing API key, network timeout
+    // against the AI provider) still flows through the
+    // `finally`. Otherwise the listeners would leak for every
+    // request that fails to probe its AI provider.
     try {
+    const capabilities = await probeCapabilities(config.ai);
     if (config.tools.enabled && capabilities.supportsTools && db) {
       const embeddingService = createEmbeddingService(config.ai);
       const retriever = capabilities.supportsEmbeddings
