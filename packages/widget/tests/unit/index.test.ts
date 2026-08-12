@@ -53,8 +53,14 @@ describe("widget config detection", () => {
         position: "bottom-left",
       },
     };
-    expect(window.KodyConfig.branding?.name).toBe("HelpBot");
-    expect(window.KodyConfig.branding?.position).toBe("bottom-left");
+    // window.KodyConfig is typed as Record<string, unknown> to keep
+    // the embed-config surface permissive; cast to the test shape so
+    // the assertions typecheck under the dedicated test tsconfig.
+    const cfg = window.KodyConfig as {
+      branding?: { name?: string; position?: string };
+    };
+    expect(cfg.branding?.name).toBe("HelpBot");
+    expect(cfg.branding?.position).toBe("bottom-left");
   });
 });
 

@@ -18,7 +18,7 @@
     "build": "vite build && tsc -p tsconfig.build.json && node scripts/stamp-types.mjs",
     "build:bundle": "vite build",
     "dev": "vite build --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"

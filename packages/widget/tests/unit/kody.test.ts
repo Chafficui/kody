@@ -182,7 +182,8 @@ describe("KodyWidget public API", () => {
       const widget = await makeWidget();
       // @ts-expect-error testing runtime guard
       await expect(widget.sendMessage(null)).rejects.toThrow(/string/);
-      // @ts-expect-error testing runtime guard
+      // Empty string IS assignable to `text: string`, so this is a pure
+      // runtime check. No @ts-expect-error needed.
       await expect(widget.sendMessage("")).rejects.toThrow(/empty/);
     });
 
