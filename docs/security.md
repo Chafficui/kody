@@ -136,8 +136,24 @@ included in the public repo).
 ## Data deletion (GDPR)
 
 - **Conversation deletion**: every assistant message has a delete
-  control that calls `DELETE /api/sessions/:id` and removes the
-  conversation from the database.
+  control that calls `DELETE /api/sessions/:id`. That call removes
+  the in-memory conversation buffer (see
+  `packages/server/src/services/conversation-store.ts`) but does
+  **not** purge every copy of a session's data. The following rows
+  are linked to the session by `session_id` and are retained in the
+  SQLite database until the operator removes them:
+  - `feedback` rows — user thumbs-up / thumbs-down ratings.
+  - `conversation_logs` rows — high-level session activity records
+    (currently unused but defined in `db/migrate.ts`).
+
+  Widget-side, the browser also stores a `sessionId` in
+  `localStorage` until the widget is reset or the storage quota
+  clears; clearing site data in the browser removes that copy.
+  A complete erasure therefore requires the operator to delete
+  the matching `feedback` / `conversation_logs` rows directly
+  against the database (e.g.
+  `DELETE FROM feedback WHERE session_id = ?`), or to wipe and
+  re-create the database file.
 - **AI disclosure**: by default, every chat shows a banner informing
   the user they're talking to an AI (EU AI Act Article 50
   compliance). Configurable per site.
@@ -154,7 +170,22 @@ do not use a third-party HTML parser.
 
 ## Reporting a vulnerability
 
-If you find a security issue, please open a private GitHub security
-advisory rather than a public issue. We aim to acknowledge reports
-within 48 hours and ship a fix within 7 days for high-severity
-issues.
+If you find a security issue, please report it privately rather than
+filing a public issue. Use whichever of the following channels best
+fits your setup — there is no required host and no hosted-only
+dependency:
+
+- **Preferred:** open a private security advisory through the
+  project's issue tracker (for example, GitHub's "Security" tab on
+  the repository you cloned). This is optional, not required — any
+  private channel maintained by the operator is acceptable.
+- **Alternative:** contact the project maintainers through the
+  contact method listed in the repository you cloned (for example,
+  a maintainer email or a private message on the project's community
+  forum).
+
+Do not include the full exploit payload in a public issue, even if
+the report is vague — limit details to a private channel until a fix
+is published. We aim to acknowledge reports within 48 hours and
+ship a fix within 7 days for high-severity issues, regardless of
+the channel used.
