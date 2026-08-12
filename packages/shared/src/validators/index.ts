@@ -25,6 +25,8 @@ export {
   publicSiteConfigSchema,
   publicBrandingSchema,
   toPublicConfig,
+  redactSiteConfigForRead,
+  REDACTED_SECRET,
   type SiteConfig,
   type BrandingConfig,
   type AiProviderConfig,

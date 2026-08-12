@@ -1,12 +1,16 @@
 import { Router, type Router as RouterType } from "express";
-import { siteConfigSchema } from "@kody/shared";
+import { siteConfigSchema, redactSiteConfigForRead } from "@kody/shared";
 import type { SiteStore } from "../../services/site-store.js";
 
 export function createAdminSitesRouter(siteStore: SiteStore): RouterType {
   const router: RouterType = Router();
 
+  // Every GET response strips secret-bearing fields. The create / update
+  // paths intentionally echo the parsed config back so callers can
+  // confirm what was stored (including the secret they just set), so
+  // those endpoints stay untouched.
   router.get("/", (_req, res) => {
-    const sites = siteStore.listSites();
+    const sites = siteStore.listSites().map(redactSiteConfigForRead);
     res.json(sites);
   });
 
@@ -17,13 +21,13 @@ export function createAdminSitesRouter(siteStore: SiteStore): RouterType {
       const all = siteStore.listSites();
       const found = all.find((s) => s.siteId === req.params.siteId);
       if (found) {
-        res.json(found);
+        res.json(redactSiteConfigForRead(found));
         return;
       }
       res.status(404).json({ error: { message: "Site not found" } });
       return;
     }
-    res.json(config);
+    res.json(redactSiteConfigForRead(config));
   });
 
   router.post("/", (req, res) => {
