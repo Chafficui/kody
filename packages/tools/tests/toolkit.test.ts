@@ -5,6 +5,8 @@ import {
   ToolRegistry,
   httpGet,
   httpPost,
+  httpGetWithHosts,
+  httpPostWithHosts,
   webhook,
   slack,
   linear,
@@ -236,13 +238,76 @@ describe("prebuilt factories", () => {
       "http://172.16.0.1/x",
       "http://[::1]/x",
       "http://[fc00::1]/x",
+      // IPv4-mapped IPv6, dotted form.
+      "http://[::ffff:127.0.0.1]/x",
+      // IPv4-mapped IPv6, hex form — would bypass the SSRF guard if
+      // the validator only accepted the dotted form. 7f00:1 == 127.0.0.1.
+      "http://[::ffff:7f00:1]/x",
+      // Hex-form mapped to a different private range, 0a00:1 == 10.0.0.1.
+      "http://[::ffff:0a00:1]/x",
       "file:///etc/passwd",
     ]) {
       const result = await httpGet.handler({ url: blocked });
       expect(result.ok).toBe(false);
-      expect(result.message.toLowerCase()).toMatch(/private|loopback|invalid|non-http|refusing/);
+      // The rejection reason must mention the literal IP / loopback, not
+      // a generic "invalid" — DNS-failure messages would also match a
+      // looser pattern, and we want the SSRF guard to be the thing that
+      // rejected the request.
+      expect(result.message).toMatch(/private|loopback|refusing|non-http/);
     }
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("httpGetWithHosts rejects URLs outside the allowlist", async () => {
+    const tool = httpGetWithHosts(["api.example.com"]);
+    const result = await tool.handler({ url: "https://other.test/x" });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/not in the allowlist/i);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("httpGetWithHosts calls fetch when the host is in the allowlist", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    });
+    const tool = httpGetWithHosts(["api.example.com"]);
+    const result = await tool.handler({ url: "https://api.example.com/x" });
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("httpPostWithHosts requires a body and enforces the host allowlist", async () => {
+    const tool = httpPostWithHosts(["api.example.com"]);
+    // No body → 400-equivalent tool failure.
+    const noBody = await tool.handler({ url: "https://api.example.com/x" });
+    expect(noBody.ok).toBe(false);
+    expect(noBody.message).toMatch(/body is required/);
+    // Off-allowlist host → blocked.
+    const offList = await tool.handler({
+      url: "https://other.test/x",
+      body: JSON.stringify({ a: 1 }),
+    });
+    expect(offList.ok).toBe(false);
+    expect(offList.message).toMatch(/not in the allowlist/i);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("httpGet appends `path` to the URL while preserving query / fragment", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    });
+    const result = await httpGet.handler({
+      url: "https://api.example.com/x?token=abc",
+      path: "/inner",
+    });
+    expect(result.ok).toBe(true);
+    const [calledUrl] = mockFetch.mock.calls[0];
+    // The slash + path lands BEFORE the query string, not after it.
+    expect(calledUrl).toBe("https://api.example.com/x/inner?token=abc");
   });
 
   it("httpGet allows loopback when an allowlist is passed via the low-level helper", async () => {

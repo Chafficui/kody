@@ -114,9 +114,23 @@ function isPrivateOrLoopbackIPv6(ip: string): boolean {
   if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
   if (lower.startsWith("fe80:")) return true; // link-local
   if (lower.startsWith("ff")) return true; // multicast
-  // IPv4-mapped IPv6 (::ffff:a.b.c.d)
-  const mapped = lower.match(/^::ffff:([0-9.]+)$/);
-  if (mapped) return isPrivateOrLoopbackIPv4(mapped[1]);
+  // IPv4-mapped IPv6. Two encodings are accepted:
+  //   ::ffff:a.b.c.d        (dotted-decimal IPv4)
+  //   ::ffff:HHHH:HHHH      (hex IPv4, e.g. ::ffff:7f00:1 == 127.0.0.1)
+  // Both are normalised to a dotted-decimal IPv4 string before the
+  // private/loopback check so a hex-form mapped address like
+  // `::ffff:7f00:1` cannot bypass the SSRF guard.
+  const dotted = lower.match(/^::ffff:([0-9.]+)$/);
+  if (dotted) return isPrivateOrLoopbackIPv4(dotted[1]);
+  const hex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hex) {
+    const hi = parseInt(hex[1], 16);
+    const lo = parseInt(hex[2], 16);
+    if (Number.isFinite(hi) && Number.isFinite(lo)) {
+      const dottedV4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+      return isPrivateOrLoopbackIPv4(dottedV4);
+    }
+  }
   return false;
 }
 

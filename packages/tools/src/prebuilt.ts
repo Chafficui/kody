@@ -74,12 +74,27 @@ function parseJsonObject(
   return obj;
 }
 
-/** Append a path suffix to a URL, joining with a single slash. */
+/**
+ * Append a path suffix to a URL, joining with a single slash while
+ * preserving any existing query string and fragment. We parse the base
+ * URL and append to its pathname so the slash + path lands in the right
+ * position even when the base has `?query` or `#frag` already.
+ */
 function buildUrl(base: string, path?: string): string {
   if (!path) return base;
-  const trimmedBase = base.replace(/\/+$/, "");
   const trimmedPath = path.replace(/^\/+/, "");
-  return trimmedPath ? `${trimmedBase}/${trimmedPath}` : base;
+  if (!trimmedPath) return base;
+  try {
+    const parsed = new URL(base);
+    const joined = parsed.pathname.replace(/\/+$/, "") + "/" + trimmedPath;
+    parsed.pathname = joined;
+    return parsed.toString();
+  } catch {
+    // Not a parseable URL — fall back to a string concat so we never
+    // break the never-throw contract of runHttpCall.
+    const trimmedBase = base.replace(/\/+$/, "");
+    return `${trimmedBase}/${trimmedPath}`;
+  }
 }
 
 /** Convert the httpCall structured result into a ToolHandlerResult. */
@@ -235,6 +250,29 @@ export const httpPost: Tool = {
   },
   handler: (args) => runHttpCall(args, "POST", true, undefined),
 };
+
+/**
+ * Build a host-restricted httpGet. Use this when the agent should only
+ * be allowed to call a fixed list of upstream hosts — anything else
+ * is rejected before the network call.
+ */
+export function httpGetWithHosts(allowedHosts: string[]): Tool {
+  return {
+    definition: httpGet.definition,
+    handler: (args) => runHttpCall(args, "GET", false, allowedHosts),
+  };
+}
+
+/**
+ * Build a host-restricted httpPost. Same shape as httpGetWithHosts but
+ * POST; the body is required just like the unrestricted version.
+ */
+export function httpPostWithHosts(allowedHosts: string[]): Tool {
+  return {
+    definition: httpPost.definition,
+    handler: (args) => runHttpCall(args, "POST", true, allowedHosts),
+  };
+}
 
 // -----------------------------------------------------------------------------
 // webhook — POST a signed payload to an arbitrary URL.

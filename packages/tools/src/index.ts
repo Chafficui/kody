@@ -25,6 +25,8 @@ export { httpCall, pluckPath, type HttpCallOptions, type HttpCallResult } from "
 export {
   httpGet,
   httpPost,
+  httpGetWithHosts,
+  httpPostWithHosts,
   webhook,
   slack,
   linear,
