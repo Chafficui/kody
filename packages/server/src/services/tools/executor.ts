@@ -174,17 +174,6 @@ export class ToolExecutor {
     sessionId?: string,
   ): Promise<ToolCallResult> {
     const { endpoint } = tool;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), endpoint.timeoutMs);
-
-    const headers: Record<string, string> = {
-      // Spread configured headers first so the mandatory
-      // Content-Type and X-Kody-Async markers can't be overridden
-      // by an operator who misconfigures the tool.
-      ...endpoint.headers,
-      "Content-Type": "application/json",
-      "X-Kody-Async": "true",
-    };
 
     // Refuse to dispatch (or accept a fallback pollUrl for) an
     // async tool whose configured endpoint is not on a TLS origin.
@@ -200,6 +189,12 @@ export class ToolExecutor {
     // operator can wire a self-hosted tool to `http://localhost`
     // in development without opening every public endpoint to
     // cleartext.
+    //
+    // The validation runs BEFORE we create the AbortController
+    // and the dispatch timeout. A rejected dispatch previously
+    // returned past the `setTimeout` call with a live timer
+    // outstanding; the timer kept the event loop referenced
+    // and later aborted an unused controller.
     const dispatchUrlError = insecureEndpointReason(endpoint.url);
     if (dispatchUrlError) {
       return {
@@ -220,6 +215,18 @@ export class ToolExecutor {
         };
       }
     }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), endpoint.timeoutMs);
+
+    const headers: Record<string, string> = {
+      // Spread configured headers first so the mandatory
+      // Content-Type and X-Kody-Async markers can't be overridden
+      // by an operator who misconfigures the tool.
+      ...endpoint.headers,
+      "Content-Type": "application/json",
+      "X-Kody-Async": "true",
+    };
 
     try {
       const response = await fetch(endpoint.url, {
