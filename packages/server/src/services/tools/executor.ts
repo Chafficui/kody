@@ -437,17 +437,31 @@ function insecureEndpointReason(rawUrl: string): string | null {
  * `.localhost` (RFC 6761), the IPv4 loopback range
  * `127.0.0.0/8`, and the IPv6 loopback `::1`. Anything else
  * is treated as a public host and requires TLS.
+ *
+ * `URL` parses bracketed IPv6 literals (e.g. `http://[::1]:9000/run`)
+ * with the brackets still attached to `hostname`, so we strip
+ * them before the equality test — otherwise `[::1]` would
+ * silently fall through to the public-host branch and an
+ * operator wiring a self-hosted tool to the IPv6 loopback
+ * would see a confusing "must use https" rejection.
  */
 function isLoopbackHost(hostname: string): boolean {
   if (!hostname) return false;
   if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
-  if (hostname === "::1") return true;
+  // Strip surrounding brackets for IPv6 literals: `URL` leaves
+  // them attached to `hostname` so the rest of the function
+  // can compare against the bare address.
+  const bareHostname =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  if (bareHostname === "::1") return true;
   // `127.0.0.0/8` — the entire class-A block is reserved for
   // loopback (RFC 1122). We accept any address in the range
   // even though the spec only mandates `127.0.0.1`; treating
   // 127.x.y.z as loopback is what every browser / OS resolver
   // does in practice and matches what an operator expects
   // when they wire a sidecar to a non-default loopback IP.
-  if (/^127\.\d+\.\d+\.\d+$/.test(hostname)) return true;
+  if (/^127\.\d+\.\d+\.\d+$/.test(bareHostname)) return true;
   return false;
 }

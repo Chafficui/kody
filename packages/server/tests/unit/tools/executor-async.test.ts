@@ -314,6 +314,35 @@ describe("ToolExecutor — async dispatch", () => {
     expect(result.async?.jobId).toBe("job-loopback");
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
+
+  it("allows an IPv6 loopback http: dispatch URL for self-hosted tools", async () => {
+    // Same as the IPv4 loopback test above, but using the
+    // IPv6 loopback `[::1]`. `URL` parses bracketed IPv6
+    // literals with the brackets still attached to
+    // `hostname`, so the loopback check must strip them
+    // before the equality test — otherwise `[::1]` would
+    // silently fall through to the public-host branch and
+    // an operator wiring a sidecar to the IPv6 loopback
+    // would see a confusing "must use https" rejection.
+    vi.mocked(fetch).mockResolvedValueOnce({
+      status: 202,
+      ok: true,
+      headers: new Headers(),
+      text: () => Promise.resolve(JSON.stringify({ jobId: "job-v6-loopback" })),
+    } as unknown as Response);
+
+    const config = makeConfig({
+      endpoint: {
+        url: "http://[::1]:9000/run",
+        asyncPollUrl: "http://[::1]:9000/poll",
+      },
+    } as Partial<CustomTool>);
+
+    const result = await executor.execute(makeCall("build_report"), config);
+
+    expect(result.async?.jobId).toBe("job-v6-loopback");
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ToolJobStore", () => {
