@@ -73,6 +73,31 @@ describe("SiteStore", () => {
     });
   });
 
+  describe("hasSiteRecord", () => {
+    it("returns false for nonexistent site", () => {
+      expect(store.hasSiteRecord("nonexistent")).toBe(false);
+    });
+
+    it("returns true for an enabled site", () => {
+      store.createSite(validConfig);
+      expect(store.hasSiteRecord("test-site")).toBe(true);
+    });
+
+    it("returns true for a disabled site (independent of getSiteConfig)", () => {
+      store.createSite(validConfig);
+      store.updateSite("test-site", { ...validConfig, enabled: false });
+      // getSiteConfig hides the disabled site; hasSiteRecord must not.
+      expect(store.getSiteConfig("test-site")).toBeNull();
+      expect(store.hasSiteRecord("test-site")).toBe(true);
+    });
+
+    it("returns false again after delete", () => {
+      store.createSite(validConfig);
+      store.deleteSite("test-site");
+      expect(store.hasSiteRecord("test-site")).toBe(false);
+    });
+  });
+
   describe("getPublicConfig", () => {
     it("returns only public fields", () => {
       store.createSite(validConfig);

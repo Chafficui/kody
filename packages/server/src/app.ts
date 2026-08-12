@@ -133,7 +133,7 @@ export function createApp(
       </div>
     </div>
   </div>
-  <script src="/widget.js" data-site-id="kody-website"></script>
+  <script src="/widget.js" data-site-id="demo"></script>
 </body>
 </html>`);
   });

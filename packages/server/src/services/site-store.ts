@@ -39,6 +39,24 @@ export class SiteStore {
     return config;
   }
 
+  /**
+   * Return `true` when any row exists for `siteId`, regardless of its
+   * `enabled` flag. This is the raw existence check that
+   * {@link getSiteConfig} hides — that method intentionally filters
+   * disabled sites to keep runtime callers from serving them. Code
+   * that needs to tell "site absent" from "site present but disabled"
+   * (e.g. the demo-site seeder reconciling cold-start state) calls
+   * this method instead.
+   */
+  hasSiteRecord(siteId: string): boolean {
+    if (this.cache.has(siteId)) return true;
+
+    const row = this.db
+      .prepare("SELECT 1 FROM sites WHERE site_id = ?")
+      .get(siteId) as { "1": number } | undefined;
+    return row !== undefined;
+  }
+
   getPublicConfig(siteId: string): PublicSiteConfig | null {
     const config = this.getSiteConfig(siteId);
     if (!config) return null;
