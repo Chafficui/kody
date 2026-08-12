@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import yaml from "js-yaml";
@@ -156,30 +157,66 @@ export function createApp(
   // Load the YAML eagerly and cache it. The file is small (~60KB) and
   // reading it once at boot is cheaper than re-reading on every request.
   // A missing file is a deploy problem, not a runtime problem.
+  //
+  // Parse-then-assign: read the YAML into a local first, then assign
+  // the caches only after `yaml.load` succeeds. If either step throws
+  // (e.g. a truncated YAML file) the caches stay null and the routes
+  // fall back to the 503 path. The previous code could leave a half-
+  // initialized cache (`openapiYamlCache` set, `openapiJsonCache`
+  // null) which would let /openapi.yaml serve stale bytes while
+  // /openapi.json returned 503 — a confusing combination.
   let openapiYamlCache: string | null = null;
   let openapiJsonCache: unknown = null;
   try {
-    openapiYamlCache = readFileSync(openapiPath, "utf8");
-    openapiJsonCache = yaml.load(openapiYamlCache);
+    const yamlText = readFileSync(openapiPath, "utf8");
+    const parsed = yaml.load(yamlText);
+    openapiYamlCache = yamlText;
+    openapiJsonCache = parsed;
   } catch (err) {
     console.warn(
       `[openapi] failed to load ${openapiPath}: ${(err as Error).message}. ` +
         "Run `pnpm --filter @kody/shared generate:openapi` to (re)generate it.",
     );
   }
+  // Long-lived browser cache for the spec — it only changes on rebuild,
+  // so SDK generators and the admin UI can fetch it once per session.
+  const OPENAPI_CACHE_CONTROL = "public, max-age=300, must-revalidate";
+  // ETags are content-based (SHA-256 of the body) so conditional GETs
+  // (If-None-Match) can short-circuit unchanged payloads. We compute
+  // them once at boot because the spec is loaded from disk then frozen
+  // — re-hashing on every request would defeat the point.
+  const etagFor = (body: string): string => {
+    const digest = createHash("sha256").update(body).digest("base64url");
+    return `"${digest}"`;
+  };
+  let openapiJsonBody = "";
+  let openapiJsonEtag = "";
+  if (openapiJsonCache !== null) {
+    openapiJsonBody = JSON.stringify(openapiJsonCache);
+    openapiJsonEtag = etagFor(openapiJsonBody);
+  }
+  const openapiYamlEtag = openapiYamlCache ? etagFor(openapiYamlCache) : "";
   app.get("/openapi.yaml", (_req, res) => {
     if (!openapiYamlCache) {
       res.status(503).type("text/plain").send("OpenAPI spec not available");
       return;
     }
-    res.type("application/yaml").send(openapiYamlCache);
+    res
+      .type("application/yaml")
+      .set("Cache-Control", OPENAPI_CACHE_CONTROL)
+      .set("ETag", openapiYamlEtag)
+      .send(openapiYamlCache);
   });
   app.get("/openapi.json", (_req, res) => {
     if (!openapiJsonCache) {
       res.status(503).type("text/plain").send("OpenAPI spec not available");
       return;
     }
-    res.json(openapiJsonCache);
+    res
+      .type("application/json")
+      .set("Cache-Control", OPENAPI_CACHE_CONTROL)
+      .set("ETag", openapiJsonEtag)
+      .send(openapiJsonBody);
   });
 
   app.use(errorHandler);

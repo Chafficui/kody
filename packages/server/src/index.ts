@@ -18,7 +18,16 @@ if (env.ADMIN_EMAIL && env.ADMIN_PASSWORD) {
 }
 
 const existing = app.siteStore.getSiteConfig("demo");
-if (!existing) {
+// The "demo" site is a developer convenience — it shows the public
+// landing page (GET /) and lets you point a widget at a known-working
+// site id. In production it would be confusing at best (a public
+// page inviting users to chat with our own AI) and a security smell
+// at worst (the demo config hard-codes an AI provider, so anyone
+// reaching / could trigger chat traffic against it). Seed it only
+// when we're explicitly in dev mode OR when the operator opts in
+// via KODY_SEED_DEMO=1.
+const shouldSeedDemo = env.NODE_ENV === "development" || process.env.KODY_SEED_DEMO === "1";
+if (shouldSeedDemo && !existing) {
   try {
     app.siteStore.createSite({
       siteId: "demo",
