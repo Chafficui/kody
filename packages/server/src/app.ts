@@ -32,6 +32,14 @@ export interface AppDependencies {
   db: Database.Database;
   rateLimiter?: RateLimiter;
   conversationStore?: ConversationStore;
+  /**
+   * Path to the OpenAPI YAML file served by /openapi.yaml and
+   * /openapi.json. Defaults to packages/shared/openapi.yaml (the
+   * generated spec shipped with the server). Tests inject a
+   * non-existent path to exercise the 503 path without touching the
+   * real on-disk file.
+   */
+  openapiPath?: string;
 }
 
 export function createApp(
@@ -153,7 +161,8 @@ export function createApp(
   // The file is committed to the repo at packages/shared/openapi.yaml and
   // shipped in the Docker image so /openapi.yaml and /openapi.json are always
   // available next to the running API.
-  const openapiPath = path.resolve(__dirname, "../../shared/openapi.yaml");
+  const openapiPath =
+    deps.openapiPath ?? path.resolve(__dirname, "../../shared/openapi.yaml");
   // Load the YAML eagerly and cache it. The file is small (~60KB) and
   // reading it once at boot is cheaper than re-reading on every request.
   // A missing file is a deploy problem, not a runtime problem.
