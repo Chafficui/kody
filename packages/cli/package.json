@@ -14,9 +14,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build tsconfig.build.json",
     "dev": "tsx src/cli.ts",
-    "pretest": "tsc --build",
+    "pretest": "tsc --build tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
