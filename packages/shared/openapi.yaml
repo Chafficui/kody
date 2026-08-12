@@ -75,13 +75,6 @@ paths:
           schema:
             type: string
             pattern: ^[a-z0-9-]+$
-        - name: x-kody-site-id
-          in: header
-          required: true
-          description: Lowercase site id (e.g. `my-shop`). Required on every widget-facing endpoint.
-          schema:
-            type: string
-            pattern: ^[a-z0-9-]+$
       responses:
         '200':
           description: Public site configuration
@@ -89,6 +82,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicSiteConfig'
+        '400':
+          description: Missing or malformed x-kody-site-id header
+        '403':
+          description: Origin not allowed for this site
         '404':
           description: Site not found or disabled
   /api/chat:
@@ -123,7 +120,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatEventStream'
         '400':
-          description: Invalid request
+          description: Missing site id header, invalid request body, or unknown site id
+        '403':
+          description: Origin not allowed for this site
+        '404':
+          description: Site not found or disabled
         '429':
           description: Rate limit exceeded
   /api/tickets:
@@ -157,7 +158,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/TicketResult'
         '400':
-          description: Tickets not enabled or invalid request
+          description: Tickets not enabled, invalid request, or unknown / disabled site id
+        '403':
+          description: Origin not allowed for this site
+        '404':
+          description: Site not found or disabled
+        '429':
+          description: Rate limit exceeded
   /api/sessions/{sessionId}:
     summary: Delete a chat session (GDPR right-to-erasure)
     delete:
@@ -181,6 +188,12 @@ paths:
       responses:
         '204':
           description: Session deleted
+        '400':
+          description: Missing or malformed x-kody-site-id header
+        '403':
+          description: Origin not allowed for this site
+        '404':
+          description: Site not found or disabled
   /api/feedback:
     summary: Record thumbs-up/down on an assistant message
     post:
@@ -206,7 +219,11 @@ paths:
         '201':
           description: Feedback stored
         '400':
-          description: Invalid request
+          description: Invalid request, missing site id header, or unknown site id
+        '403':
+          description: Origin not allowed for this site
+        '404':
+          description: Site not found or disabled
   /api/admin/login:
     summary: Admin login (issues a session cookie + bearer token)
     post:
@@ -225,6 +242,10 @@ paths:
       responses:
         '200':
           description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminLoginResponse'
         '401':
           description: Invalid credentials
   /api/admin/logout:
@@ -362,13 +383,19 @@ paths:
       - name: siteId
         in: path
         required: true
+        description: Lowercase alphanumeric site identifier.
         schema:
           type: string
+          pattern: ^[a-z0-9-]+$
       - name: sourceIndex
         in: path
         required: true
+        description: >-
+          Zero-based index into the site's `knowledge.sources` array (see GET /api/admin/sites/:siteId/scraping for the
+          current ordering).
         schema:
           type: integer
+          minimum: 0
     post:
       summary: Trigger a re-scrape
       tags:
@@ -459,9 +486,9 @@ paths:
               - error
         - name: since
           in: query
+          description: Epoch millis
           schema:
             type: integer
-            description: Epoch millis
         - name: limit
           in: query
           schema:
@@ -624,10 +651,10 @@ components:
             systemPromptPrefix:
               type: string
               maxLength: 4000
-          additionalProperties: false
           required:
             - baseUrl
             - model
+          additionalProperties: false
         guardrails:
           type: object
           properties:
@@ -667,10 +694,10 @@ components:
             enableOutputScrubbing:
               type: boolean
               default: true
-          additionalProperties: false
           required:
             - allowedTopics
             - topicDescription
+          additionalProperties: false
         knowledge:
           type: object
           properties:
@@ -695,11 +722,11 @@ components:
                       url:
                         type: string
                         format: uri
-                    additionalProperties: false
                     required:
                       - type
                       - title
                       - content
+                    additionalProperties: false
                   - type: object
                     properties:
                       type:
@@ -720,10 +747,10 @@ components:
                       enableJsRendering:
                         type: boolean
                         default: true
-                    additionalProperties: false
                     required:
                       - type
                       - url
+                    additionalProperties: false
                   - type: object
                     properties:
                       type:
@@ -736,10 +763,10 @@ components:
                       title:
                         type: string
                         maxLength: 200
-                    additionalProperties: false
                     required:
                       - type
                       - filePath
+                    additionalProperties: false
                   - type: object
                     properties:
                       type:
@@ -759,18 +786,18 @@ components:
                               type: string
                               minLength: 1
                               maxLength: 5000
-                          additionalProperties: false
                           required:
                             - question
                             - answer
+                          additionalProperties: false
                         minItems: 1
                       url:
                         type: string
                         format: uri
-                    additionalProperties: false
                     required:
                       - type
                       - entries
+                    additionalProperties: false
               default: []
             maxContextTokens:
               type: integer
@@ -842,13 +869,13 @@ components:
                       issueType:
                         type: string
                         default: Task
-                    additionalProperties: false
                     required:
                       - provider
                       - baseUrl
                       - projectKey
                       - apiToken
                       - email
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -870,12 +897,12 @@ components:
                           type: string
                         default:
                           - kody-ticket
-                    additionalProperties: false
                     required:
                       - provider
                       - owner
                       - repo
                       - token
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -893,11 +920,11 @@ components:
                         items:
                           type: string
                         default: []
-                    additionalProperties: false
                     required:
                       - provider
                       - apiKey
                       - teamId
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -918,10 +945,10 @@ components:
                         type: string
                       smtpPass:
                         type: string
-                    additionalProperties: false
                     required:
                       - provider
                       - to
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -944,10 +971,10 @@ components:
                         default: {}
                       secret:
                         type: string
-                    additionalProperties: false
                     required:
                       - provider
                       - url
+                    additionalProperties: false
               default: []
             requiredFields:
               type: array
@@ -1014,18 +1041,18 @@ components:
                               type: array
                               items:
                                 type: string
-                          additionalProperties: false
                           required:
                             - type
+                          additionalProperties: false
                       required:
                         type: array
                         items:
                           type: string
                         default: []
-                    additionalProperties: false
                     required:
                       - type
                       - properties
+                    additionalProperties: false
                   endpoint:
                     type: object
                     properties:
@@ -1050,15 +1077,15 @@ components:
                         minimum: 1000
                         maximum: 30000
                         default: 10000
-                    additionalProperties: false
                     required:
                       - url
-                additionalProperties: false
+                    additionalProperties: false
                 required:
                   - name
                   - description
                   - parameters
                   - endpoint
+                additionalProperties: false
               default: []
             builtinTools:
               type: object
@@ -1142,12 +1169,12 @@ components:
         enabled:
           type: boolean
           default: true
-      additionalProperties: false
       required:
         - siteId
         - allowedOrigins
         - ai
         - guardrails
+      additionalProperties: false
     SiteConfigRead:
       type: object
       properties:
@@ -1287,10 +1314,10 @@ components:
             systemPromptPrefix:
               type: string
               maxLength: 4000
-          additionalProperties: false
           required:
             - baseUrl
             - model
+          additionalProperties: false
         guardrails:
           type: object
           properties:
@@ -1330,10 +1357,10 @@ components:
             enableOutputScrubbing:
               type: boolean
               default: true
-          additionalProperties: false
           required:
             - allowedTopics
             - topicDescription
+          additionalProperties: false
         knowledge:
           type: object
           properties:
@@ -1358,11 +1385,11 @@ components:
                       url:
                         type: string
                         format: uri
-                    additionalProperties: false
                     required:
                       - type
                       - title
                       - content
+                    additionalProperties: false
                   - type: object
                     properties:
                       type:
@@ -1383,10 +1410,10 @@ components:
                       enableJsRendering:
                         type: boolean
                         default: true
-                    additionalProperties: false
                     required:
                       - type
                       - url
+                    additionalProperties: false
                   - type: object
                     properties:
                       type:
@@ -1399,10 +1426,10 @@ components:
                       title:
                         type: string
                         maxLength: 200
-                    additionalProperties: false
                     required:
                       - type
                       - filePath
+                    additionalProperties: false
                   - type: object
                     properties:
                       type:
@@ -1422,18 +1449,18 @@ components:
                               type: string
                               minLength: 1
                               maxLength: 5000
-                          additionalProperties: false
                           required:
                             - question
                             - answer
+                          additionalProperties: false
                         minItems: 1
                       url:
                         type: string
                         format: uri
-                    additionalProperties: false
                     required:
                       - type
                       - entries
+                    additionalProperties: false
               default: []
             maxContextTokens:
               type: integer
@@ -1505,13 +1532,13 @@ components:
                       issueType:
                         type: string
                         default: Task
-                    additionalProperties: false
                     required:
                       - provider
                       - baseUrl
                       - projectKey
                       - apiToken
                       - email
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -1533,12 +1560,12 @@ components:
                           type: string
                         default:
                           - kody-ticket
-                    additionalProperties: false
                     required:
                       - provider
                       - owner
                       - repo
                       - token
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -1556,11 +1583,11 @@ components:
                         items:
                           type: string
                         default: []
-                    additionalProperties: false
                     required:
                       - provider
                       - apiKey
                       - teamId
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -1582,10 +1609,10 @@ components:
                       smtpPass:
                         type: string
                         description: Redacted; create/update only.
-                    additionalProperties: false
                     required:
                       - provider
                       - to
+                    additionalProperties: false
                   - type: object
                     properties:
                       provider:
@@ -1609,10 +1636,10 @@ components:
                       secret:
                         type: string
                         description: Redacted; create/update only.
-                    additionalProperties: false
                     required:
                       - provider
                       - url
+                    additionalProperties: false
               default: []
             requiredFields:
               type: array
@@ -1679,18 +1706,18 @@ components:
                               type: array
                               items:
                                 type: string
-                          additionalProperties: false
                           required:
                             - type
+                          additionalProperties: false
                       required:
                         type: array
                         items:
                           type: string
                         default: []
-                    additionalProperties: false
                     required:
                       - type
                       - properties
+                    additionalProperties: false
                   endpoint:
                     type: object
                     properties:
@@ -1715,15 +1742,15 @@ components:
                         minimum: 1000
                         maximum: 30000
                         default: 10000
-                    additionalProperties: false
                     required:
                       - url
-                additionalProperties: false
+                    additionalProperties: false
                 required:
                   - name
                   - description
                   - parameters
                   - endpoint
+                additionalProperties: false
               default: []
             builtinTools:
               type: object
@@ -1807,12 +1834,12 @@ components:
         enabled:
           type: boolean
           default: true
-      additionalProperties: false
       required:
         - siteId
         - allowedOrigins
         - ai
         - guardrails
+      additionalProperties: false
     PublicSiteConfig:
       type: object
       properties:
@@ -1924,11 +1951,11 @@ components:
               type: array
               items:
                 type: string
-          additionalProperties: false
           required:
             - enabled
             - promptMessage
             - requiredFields
+          additionalProperties: false
         personality:
           type: object
           properties:
@@ -1963,11 +1990,11 @@ components:
               type: string
             conversationDeletionEnabled:
               type: boolean
-          additionalProperties: false
           required:
             - aiDisclosureEnabled
             - aiDisclosureMessage
             - conversationDeletionEnabled
+          additionalProperties: false
         conversationStarters:
           type: array
           items:
@@ -1976,7 +2003,6 @@ components:
           type: object
           additionalProperties:
             type: string
-      additionalProperties: false
       required:
         - siteId
         - branding
@@ -1984,101 +2010,7 @@ components:
         - personality
         - compliance
         - conversationStarters
-    KnowledgeSource:
-      oneOf:
-        - type: object
-          properties:
-            type:
-              type: string
-              enum:
-                - text
-            title:
-              type: string
-              minLength: 1
-              maxLength: 200
-            content:
-              type: string
-              minLength: 1
-              maxLength: 50000
-            url:
-              type: string
-              format: uri
-          additionalProperties: false
-          required:
-            - type
-            - title
-            - content
-        - type: object
-          properties:
-            type:
-              type: string
-              enum:
-                - url
-            url:
-              type: string
-              format: uri
-            title:
-              type: string
-              maxLength: 200
-            refreshIntervalHours:
-              type: integer
-              minimum: 1
-              maximum: 720
-              default: 24
-            enableJsRendering:
-              type: boolean
-              default: true
-          additionalProperties: false
-          required:
-            - type
-            - url
-        - type: object
-          properties:
-            type:
-              type: string
-              enum:
-                - file
-            filePath:
-              type: string
-              minLength: 1
-            title:
-              type: string
-              maxLength: 200
-          additionalProperties: false
-          required:
-            - type
-            - filePath
-        - type: object
-          properties:
-            type:
-              type: string
-              enum:
-                - faq
-            entries:
-              type: array
-              items:
-                type: object
-                properties:
-                  question:
-                    type: string
-                    minLength: 1
-                    maxLength: 500
-                  answer:
-                    type: string
-                    minLength: 1
-                    maxLength: 5000
-                additionalProperties: false
-                required:
-                  - question
-                  - answer
-              minItems: 1
-            url:
-              type: string
-              format: uri
-          additionalProperties: false
-          required:
-            - type
-            - entries
+      additionalProperties: false
     KnowledgeSourceText:
       type: object
       properties:
@@ -2097,11 +2029,11 @@ components:
         url:
           type: string
           format: uri
-      additionalProperties: false
       required:
         - type
         - title
         - content
+      additionalProperties: false
     KnowledgeSourceUrl:
       type: object
       properties:
@@ -2123,10 +2055,10 @@ components:
         enableJsRendering:
           type: boolean
           default: true
-      additionalProperties: false
       required:
         - type
         - url
+      additionalProperties: false
     KnowledgeSourceFile:
       type: object
       properties:
@@ -2140,10 +2072,10 @@ components:
         title:
           type: string
           maxLength: 200
-      additionalProperties: false
       required:
         - type
         - filePath
+      additionalProperties: false
     KnowledgeSourceFaq:
       type: object
       properties:
@@ -2164,147 +2096,31 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 5000
-            additionalProperties: false
             required:
               - question
               - answer
+            additionalProperties: false
           minItems: 1
         url:
           type: string
           format: uri
-      additionalProperties: false
       required:
         - type
         - entries
-    TicketProvider:
+      additionalProperties: false
+    KnowledgeSource:
       oneOf:
-        - type: object
-          properties:
-            provider:
-              type: string
-              enum:
-                - jira
-            baseUrl:
-              type: string
-              format: uri
-            projectKey:
-              type: string
-              minLength: 1
-            apiToken:
-              type: string
-              minLength: 1
-            email:
-              type: string
-              format: email
-            issueType:
-              type: string
-              default: Task
-          additionalProperties: false
-          required:
-            - provider
-            - baseUrl
-            - projectKey
-            - apiToken
-            - email
-        - type: object
-          properties:
-            provider:
-              type: string
-              enum:
-                - github
-            owner:
-              type: string
-              minLength: 1
-            repo:
-              type: string
-              minLength: 1
-            token:
-              type: string
-              minLength: 1
-            labels:
-              type: array
-              items:
-                type: string
-              default:
-                - kody-ticket
-          additionalProperties: false
-          required:
-            - provider
-            - owner
-            - repo
-            - token
-        - type: object
-          properties:
-            provider:
-              type: string
-              enum:
-                - linear
-            apiKey:
-              type: string
-              minLength: 1
-            teamId:
-              type: string
-              minLength: 1
-            labelIds:
-              type: array
-              items:
-                type: string
-              default: []
-          additionalProperties: false
-          required:
-            - provider
-            - apiKey
-            - teamId
-        - type: object
-          properties:
-            provider:
-              type: string
-              enum:
-                - email
-            to:
-              type: string
-              format: email
-            from:
-              type: string
-              format: email
-            smtpHost:
-              type: string
-            smtpPort:
-              type: integer
-            smtpUser:
-              type: string
-            smtpPass:
-              type: string
-          additionalProperties: false
-          required:
-            - provider
-            - to
-        - type: object
-          properties:
-            provider:
-              type: string
-              enum:
-                - webhook
-            url:
-              type: string
-              format: uri
-            method:
-              type: string
-              enum:
-                - POST
-                - PUT
-              default: POST
-            headers:
-              type: object
-              additionalProperties:
-                type: string
-              default: {}
-            secret:
-              type: string
-          additionalProperties: false
-          required:
-            - provider
-            - url
+        - $ref: '#/components/schemas/KnowledgeSourceText'
+        - $ref: '#/components/schemas/KnowledgeSourceUrl'
+        - $ref: '#/components/schemas/KnowledgeSourceFile'
+        - $ref: '#/components/schemas/KnowledgeSourceFaq'
+      discriminator:
+        propertyName: type
+        mapping:
+          text: '#/components/schemas/KnowledgeSourceText'
+          url: '#/components/schemas/KnowledgeSourceUrl'
+          file: '#/components/schemas/KnowledgeSourceFile'
+          faq: '#/components/schemas/KnowledgeSourceFaq'
     TicketProviderJira:
       type: object
       properties:
@@ -2327,13 +2143,13 @@ components:
         issueType:
           type: string
           default: Task
-      additionalProperties: false
       required:
         - provider
         - baseUrl
         - projectKey
         - apiToken
         - email
+      additionalProperties: false
     TicketProviderGithub:
       type: object
       properties:
@@ -2356,12 +2172,12 @@ components:
             type: string
           default:
             - kody-ticket
-      additionalProperties: false
       required:
         - provider
         - owner
         - repo
         - token
+      additionalProperties: false
     TicketProviderLinear:
       type: object
       properties:
@@ -2380,11 +2196,11 @@ components:
           items:
             type: string
           default: []
-      additionalProperties: false
       required:
         - provider
         - apiKey
         - teamId
+      additionalProperties: false
     TicketProviderEmail:
       type: object
       properties:
@@ -2406,10 +2222,10 @@ components:
           type: string
         smtpPass:
           type: string
-      additionalProperties: false
       required:
         - provider
         - to
+      additionalProperties: false
     TicketProviderWebhook:
       type: object
       properties:
@@ -2433,10 +2249,25 @@ components:
           default: {}
         secret:
           type: string
-      additionalProperties: false
       required:
         - provider
         - url
+      additionalProperties: false
+    TicketProvider:
+      oneOf:
+        - $ref: '#/components/schemas/TicketProviderJira'
+        - $ref: '#/components/schemas/TicketProviderGithub'
+        - $ref: '#/components/schemas/TicketProviderLinear'
+        - $ref: '#/components/schemas/TicketProviderEmail'
+        - $ref: '#/components/schemas/TicketProviderWebhook'
+      discriminator:
+        propertyName: provider
+        mapping:
+          jira: '#/components/schemas/TicketProviderJira'
+          github: '#/components/schemas/TicketProviderGithub'
+          linear: '#/components/schemas/TicketProviderLinear'
+          email: '#/components/schemas/TicketProviderEmail'
+          webhook: '#/components/schemas/TicketProviderWebhook'
     ToolsConfig:
       type: object
       properties:
@@ -2488,18 +2319,18 @@ components:
                           type: array
                           items:
                             type: string
-                      additionalProperties: false
                       required:
                         - type
+                      additionalProperties: false
                   required:
                     type: array
                     items:
                       type: string
                     default: []
-                additionalProperties: false
                 required:
                   - type
                   - properties
+                additionalProperties: false
               endpoint:
                 type: object
                 properties:
@@ -2524,15 +2355,15 @@ components:
                     minimum: 1000
                     maximum: 30000
                     default: 10000
-                additionalProperties: false
                 required:
                   - url
-            additionalProperties: false
+                additionalProperties: false
             required:
               - name
               - description
               - parameters
               - endpoint
+            additionalProperties: false
           default: []
         builtinTools:
           type: object
@@ -2581,18 +2412,18 @@ components:
                     type: array
                     items:
                       type: string
-                additionalProperties: false
                 required:
                   - type
+                additionalProperties: false
             required:
               type: array
               items:
                 type: string
               default: []
-          additionalProperties: false
           required:
             - type
             - properties
+          additionalProperties: false
         endpoint:
           type: object
           properties:
@@ -2617,15 +2448,15 @@ components:
               minimum: 1000
               maximum: 30000
               default: 10000
-          additionalProperties: false
           required:
             - url
-      additionalProperties: false
+          additionalProperties: false
       required:
         - name
         - description
         - parameters
         - endpoint
+      additionalProperties: false
     ChatRequest:
       type: object
       properties:
@@ -2637,10 +2468,10 @@ components:
         message:
           type: string
           minLength: 1
-      additionalProperties: false
       required:
         - siteId
         - message
+      additionalProperties: false
     ChatResponseEvent:
       oneOf:
         - type: object
@@ -2651,10 +2482,10 @@ components:
                 - session
             sessionId:
               type: string
-          additionalProperties: false
           required:
             - type
             - sessionId
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2663,19 +2494,19 @@ components:
                 - delta
             content:
               type: string
-          additionalProperties: false
           required:
             - type
             - content
+          additionalProperties: false
         - type: object
           properties:
             type:
               type: string
               enum:
                 - done
-          additionalProperties: false
           required:
             - type
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2684,10 +2515,10 @@ components:
                 - error
             message:
               type: string
-          additionalProperties: false
           required:
             - type
             - message
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2696,10 +2527,10 @@ components:
                 - blocked
             message:
               type: string
-          additionalProperties: false
           required:
             - type
             - message
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2708,10 +2539,10 @@ components:
                 - ticket_prompt
             message:
               type: string
-          additionalProperties: false
           required:
             - type
             - message
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2722,11 +2553,11 @@ components:
               type: string
             displayText:
               type: string
-          additionalProperties: false
           required:
             - type
             - name
             - displayText
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2735,10 +2566,10 @@ components:
                 - tool_end
             name:
               type: string
-          additionalProperties: false
           required:
             - type
             - name
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2756,14 +2587,14 @@ components:
                     type: string
                   score:
                     type: number
-                additionalProperties: false
                 required:
                   - title
                   - score
-          additionalProperties: false
+                additionalProperties: false
           required:
             - type
             - chunks
+          additionalProperties: false
         - type: object
           properties:
             type:
@@ -2774,10 +2605,10 @@ components:
               type: array
               items:
                 type: string
-          additionalProperties: false
           required:
             - type
             - suggestions
+          additionalProperties: false
     ChatEventStream:
       type: object
       description: >-
@@ -2812,12 +2643,12 @@ components:
           enum:
             - up
             - down
-      additionalProperties: false
       required:
         - siteId
         - sessionId
         - messageIndex
         - rating
+      additionalProperties: false
     TicketRequest:
       type: object
       properties:
@@ -2843,17 +2674,17 @@ components:
               type: string
               minLength: 1
               maxLength: 5000
-          additionalProperties: false
           required:
             - description
+          additionalProperties: false
         includeTranscript:
           type: boolean
           default: true
-      additionalProperties: false
       required:
         - siteId
         - sessionId
         - fields
+      additionalProperties: false
     TicketResult:
       type: object
       properties:
@@ -2866,10 +2697,10 @@ components:
           format: uri
         message:
           type: string
-      additionalProperties: false
       required:
         - success
         - message
+      additionalProperties: false
     AdminLogin:
       type: object
       properties:
@@ -2880,10 +2711,10 @@ components:
           type: string
           minLength: 8
           maxLength: 128
-      additionalProperties: false
       required:
         - email
         - password
+      additionalProperties: false
     AdminCreateUser:
       type: object
       properties:
@@ -2894,10 +2725,25 @@ components:
           type: string
           minLength: 8
           maxLength: 128
-      additionalProperties: false
       required:
         - email
         - password
+      additionalProperties: false
+    AdminLoginResponse:
+      type: object
+      required:
+        - token
+        - expiresAt
+      properties:
+        token:
+          type: string
+          description: >-
+            Opaque bearer token. Pass as `Authorization: Bearer <token>` for CLI / script use. Mirror of the
+            `kody_session` httpOnly cookie for browser clients.
+        expiresAt:
+          type: string
+          format: date-time
+          description: ISO-8601 expiry for the token. Tokens are valid for 24 hours.
   securitySchemes:
     bearerAuth:
       type: http
