@@ -128,7 +128,9 @@ const SKIP_FILES = new Set([
 ]);
 
 // File extensions we DO scan. Markdown is included so docs and
-// READMEs are checked alongside code.
+// READMEs are checked alongside code. HTML and CSS are included so
+// tracked frontend assets (e.g. the admin index.html and stylesheet)
+// reach scanFile() and any hosted-only references are reported.
 const SCAN_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
@@ -143,6 +145,8 @@ const SCAN_EXTENSIONS = new Set([
   ".mdx",
   ".sh",
   ".env",
+  ".html",
+  ".css",
   "",
 ]);
 
@@ -158,7 +162,11 @@ const SCAN_EXTENSIONS = new Set([
 const README_ADVERTISING_EXEMPT = new Set(["README.md"]);
 
 // Walk a directory recursively, yielding file paths. Skips SKIP_DIRS
-// and SKIP_FILES. Symlinks are not followed (avoids cycles).
+// and SKIP_FILES. Symlinks are resolved once via `stat` and classified
+// by their target: a symlink to a regular file is yielded (subject to
+// SKIP_FILES) so hosted-only references inside it are still reported,
+// while a symlink to a directory is skipped without recursing (avoids
+// cycles and matches the no-follow policy for directories).
 async function* walk(dir) {
   let entries;
   try {
@@ -168,13 +176,43 @@ async function* walk(dir) {
     throw err;
   }
   for (const entry of entries) {
-    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
-    if (entry.isFile() && SKIP_FILES.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
+
     if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
       yield* walk(full);
-    } else if (entry.isFile()) {
+      continue;
+    }
+
+    if (entry.isFile()) {
+      if (SKIP_FILES.has(entry.name)) continue;
       yield full;
+      continue;
+    }
+
+    // Anything that is not a regular directory or file from the
+    // Dirent's perspective is treated as a candidate symlink. We
+    // stat the target to decide what to do with it. If stat fails
+    // (broken link, permission denied), the entry is skipped
+    // silently — we don't want a transient fs error to fail the
+    // whole CI guardrail run.
+    if (entry.isSymbolicLink()) {
+      let targetStat;
+      try {
+        targetStat = await stat(full);
+      } catch {
+        continue;
+      }
+      if (targetStat.isDirectory()) {
+        // Skip symlink-to-directory without recursing: avoids
+        // cycles and matches the policy for real directories
+        // (those are descended explicitly above).
+        continue;
+      }
+      if (targetStat.isFile()) {
+        if (SKIP_FILES.has(entry.name)) continue;
+        yield full;
+      }
     }
   }
 }
