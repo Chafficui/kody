@@ -164,33 +164,44 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
       // zod 3.x exposes the shape as a getter function; call it.
       const shapeFn = def.shape as unknown as (() => Record<string, z.ZodTypeAny>) | Record<string, z.ZodTypeAny>;
       const shape = typeof shapeFn === "function" ? shapeFn() : shapeFn;
+      // Zod's `unknownKeys` controls how the parser handles extra properties
+      // — `strict` rejects them, `strip` (the default) silently drops them,
+      // and `passthrough` keeps them. We mirror the parser's behaviour in
+      // OpenAPI by emitting `additionalProperties: false` ONLY for `strict`,
+      // which is the only mode that actually forbids them. The other two
+      // modes would misrepresent the runtime contract.
+      //
+      // Note: when an object is wrapped with `.default({})`, Zod 3 inserts
+      // a `ZodNever` catchall so the default cannot smuggle in unknown
+      // keys — we treat that as an implicit "strict" and forbid extras
+      // there too. ZodNever itself is not exposed in the public spec.
+      const unknownKeys = (def.unknownKeys as string | undefined) ?? "strip";
+      const catchall = (def.catchall as z.ZodTypeAny | undefined) ?? null;
+      const catchallIsNever =
+        catchall !== null && (catchall._def as { typeName: string }).typeName === "ZodNever";
       const properties: Record<string, OasSchema> = {};
       const required: string[] = [];
       for (const [key, value] of Object.entries(shape ?? {})) {
         const child = value as z.ZodTypeAny;
         // A property is "not required" if it is optional OR has a default
         // value (Zod fills in the default when the field is missing, so
-        // OpenAPI consumers should treat it as optional too).
+        // OpenAPI consumers should treat it as optional too). The
+        // ZodDefault branch below handles the default value extraction
+        // for us, so we don't need to repeat it here.
         const { schema, optional } = unwrapOptional(child);
         const hasDefault = hasZodDefault(child);
         const mapped = zodToOas(schema, { path: `${ctx.path}.${key}` });
-        if (hasDefault) {
-          try {
-            mapped.default = (getZodDefaultValue(child) as () => unknown)();
-          } catch {
-            // Some defaults throw (e.g. random IDs) — skip them.
-          }
-        }
         properties[key] = mapped;
         if (!optional && !hasDefault) required.push(key);
       }
-      const out: OasSchema = {
-        type: "object",
-        properties,
-        additionalProperties: false,
-      };
+      const out: OasSchema = { type: "object", properties };
       applyDescription(def, out);
       if (required.length > 0) out.required = required;
+      if (unknownKeys === "strict" || catchallIsNever) {
+        out.additionalProperties = false;
+      } else if (catchall) {
+        out.additionalProperties = zodToOas(catchall, { path: `${ctx.path}{catchall}` });
+      }
       return out;
     }
 
@@ -243,7 +254,26 @@ export function zodToOas(schema: z.ZodTypeAny, ctx: MapContext = { path: "" }): 
       const inner = def.innerType as z.ZodTypeAny;
       const mapped = zodToOas(inner, ctx);
       const t = mapped.type;
-      if (typeof t === "string") mapped.type = [t, "null"];
+      if (Array.isArray(t)) {
+        // Inner schema already expressed a multi-type (e.g. itself a nullable
+        // chain like `string | null | null`); leave the array alone, the
+        // "null" is already in there.
+        return mapped;
+      }
+      if (typeof t !== "string") {
+        // The inner schema didn't resolve to a single named type — for
+        // example a `ZodOptional` that got unwrapped to its inner, or a
+        // record/array with no top-level `type`. OpenAPI's
+        // `type: [T, "null"]` form requires the inner to be a single type
+        // string, so we fail loudly rather than silently drop the null
+        // (which would make the field mandatory at the wire level when it
+        // is actually nullable on the server).
+        throw ctxError(
+          ctx.path,
+          `cannot widen ${JSON.stringify(t)} to a nullable type — inner schema has no single \`type\` (consider mapping the inner explicitly)`,
+        );
+      }
+      mapped.type = [t, "null"];
       return mapped;
     }
 
@@ -275,6 +305,8 @@ function unwrapOptional(schema: z.ZodTypeAny): { schema: z.ZodTypeAny; optional:
  * `ZodDefault` is present. Properties that carry a default are
  * effectively optional — Zod supplies the default when the field is
  * missing — so they should not appear in the OpenAPI `required` array.
+ * The default *value* itself is extracted by the `ZodDefault` branch of
+ * `zodToOas`, so this helper only reports the presence / absence.
  */
 function hasZodDefault(schema: z.ZodTypeAny): boolean {
   let cur: z.ZodTypeAny = schema;
@@ -290,10 +322,4 @@ function hasZodDefault(schema: z.ZodTypeAny): boolean {
     return false;
   }
   return false;
-}
-
-/** Return the ZodDefault's `defaultValue` function if one is present. */
-function getZodDefaultValue(schema: z.ZodTypeAny): (() => unknown) | undefined {
-  const { defaultValue } = schema._def as { defaultValue?: () => unknown };
-  return defaultValue;
 }
