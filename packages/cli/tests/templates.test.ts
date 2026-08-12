@@ -3,9 +3,12 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   generateFiles,
   renderEnvFile,
+  renderEnvExample,
+  renderEnvGitignore,
   renderDockerCompose,
   renderEmbedSnippet,
   AI_PROVIDER_PRESETS,
@@ -51,15 +54,62 @@ describe("templates", () => {
     expect(env).toContain("ADMIN_PASSWORD='supersecret123'");
   });
 
-  it("escapes special characters in secret values", () => {
-    const opts: InitOptions = { ...sampleOpts, apiKey: "sk#abc def", adminPassword: "p'ss\nword" };
-    const env = renderEnvFile(opts);
-    // The # would normally turn the rest of the line into a comment; quoting
-    // the whole value protects it.
-    expect(env).toContain("AI_API_KEY='sk#abc def'");
-    // Embedded single quote gets escaped with the standard '\'' trick; the
-    // raw newline would otherwise break the line entirely.
-    expect(env).toContain("ADMIN_PASSWORD='p'\\''ss\nword'");
+  it("renders .env.example with placeholders (no live secrets)", () => {
+    const example = renderEnvExample(sampleOpts);
+    // Non-secret fields mirror the user's chosen values — those are
+    // expected to be the same in .env and .env.example.
+    expect(example).toContain("PORT=3456");
+    expect(example).toContain("SITE_ID=test-site");
+    expect(example).toContain("ALLOWED_ORIGIN=http://localhost:8080");
+    expect(example).toContain("AI_BASE_URL=http://localhost:11434/v1");
+    expect(example).toContain("AI_MODEL=llama3.2");
+    expect(example).toContain("ADMIN_EMAIL=admin@example.com");
+    // Secret-bearing keys carry placeholders only — never the real value.
+    expect(example).not.toContain("ollama");
+    expect(example).not.toContain("supersecret123");
+    expect(example).toContain("AI_API_KEY='replace-with-your-provider-key'");
+    expect(example).toContain("ADMIN_PASSWORD='change-me-to-a-strong-secret'");
+  });
+
+  it("renders a .gitignore that covers .env, data/, and node_modules/", () => {
+    const gi = renderEnvGitignore();
+    // Each line on its own so a leading-space variant of .env is still
+    // caught by a real operator grepping for ".env".
+    expect(gi.split(/\r?\n/)).toContain(".env");
+    expect(gi).toContain("data/");
+    expect(gi).toContain("node_modules/");
+  });
+
+  it("generateFiles returns the six canonical files", () => {
+    const files = generateFiles(sampleOpts);
+    const names = files.map((f) => f.relativePath).sort();
+    expect(names).toEqual(
+      [".env", ".env.example", ".gitignore", "EMBED.md", "README.md", "docker-compose.yml"].sort(),
+    );
+  });
+
+  it("escapes special characters in secret values (round-trip)", () => {
+    // Every value we emit must survive a docker-compose / dotenv round
+    // trip — i.e. the bytes between the outer single quotes must be
+    // exactly what we want the parser to see. We use the Compose-style
+    // backslash-apostrophe escape (docker-compose does not run values
+    // through a shell) and turn raw newlines into \n so the line stays
+    // a single line in the file.
+    const cases: Array<{ name: string; value: string; expected: string }> = [
+      { name: "apostrophe", value: "p'ss", expected: "p\\'ss" },
+      { name: "backslash", value: "a\\b", expected: "a\\\\b" },
+      { name: "newline", value: "line1\nline2", expected: "line1\\nline2" },
+      { name: "hash", value: "sk#abc def", expected: "sk#abc def" },
+    ];
+    for (const c of cases) {
+      const env = renderEnvFile({ ...sampleOpts, apiKey: c.value });
+      // The escaped form sits between the outer single quotes — assert
+      // that and that the line is still a single line (no raw \n).
+      expect(env, `case ${c.name}`).toContain(`AI_API_KEY='${c.expected}'`);
+      const lines = env.split("\n");
+      const target = lines.find((l) => l.startsWith("AI_API_KEY="));
+      expect(target, `AI_API_KEY line for ${c.name} must not contain a raw newline`).toBeDefined();
+    }
   });
 
   it("renders a docker-compose.yml with the server port", () => {
@@ -85,23 +135,18 @@ describe("templates", () => {
     expect(labels.some((l) => l.toLowerCase().includes("vllm"))).toBe(true);
     expect(labels.some((l) => l.toLowerCase().includes("llama"))).toBe(true);
   });
-
-  it("generateFiles returns the four canonical files", () => {
-    const files = generateFiles(sampleOpts);
-    const names = files.map((f) => f.relativePath).sort();
-    expect(names).toEqual([".env.example", "EMBED.md", "README.md", "docker-compose.yml"].sort());
-  });
 });
 
 describe("CLI binary", () => {
   // The CLI runs as a separate process. We exec the built dist directly.
-  const cliPath = path.resolve(__dirname, "..", "dist", "cli.js");
-  // The vitest globalSetup already guards this, but assert it again here
-  // so a misconfigured local run fails with a clear message instead of
-  // MODULE_NOT_FOUND later.
+  // Use `fileURLToPath` (ESM-safe) rather than the CommonJS-only
+  // `__dirname` to resolve the path, and assert the build exists up
+  // front so a missing `dist/cli.js` fails with a clear message
+  // instead of `MODULE_NOT_FOUND` later.
+  const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   if (!existsSync(cliPath)) {
     throw new Error(
-      `Missing build at ${cliPath}. Run \`pnpm --filter @kody/cli build\` (or \`pnpm install\`) first.`,
+      `Missing build at ${cliPath}. Run \`pnpm --filter @kody/cli build\` first.`,
     );
   }
 
@@ -145,9 +190,9 @@ describe("CLI binary", () => {
 });
 
 describe("init --non-interactive", () => {
-  const cliPath = path.resolve(__dirname, "..", "dist", "cli.js");
+  const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 
-  it("writes the four canonical files with the right contents", () => {
+  it("writes the six canonical files with the right contents", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "kody-init-"));
     try {
       const serverDir = path.join(tmp, "kody-server");
@@ -180,18 +225,24 @@ describe("init --non-interactive", () => {
         },
       );
 
-      // All four files exist
-      for (const name of [".env.example", "docker-compose.yml", "EMBED.md", "README.md"]) {
+      // All six files exist (.env + .env.example + .gitignore + compose + embed + readme)
+      for (const name of [".env", ".env.example", ".gitignore", "docker-compose.yml", "EMBED.md", "README.md"]) {
         const p = path.join(serverDir, name);
         expect(existsSync(p), `${name} should be created`).toBe(true);
       }
 
-      // .env contains the user-supplied values
-      const env = readFileSync(path.join(serverDir, ".env.example"), "utf8");
+      // .env contains the user-supplied secrets (the live one)
+      const env = readFileSync(path.join(serverDir, ".env"), "utf8");
       expect(env).toContain("SITE_ID=my-site");
       expect(env).toContain("ALLOWED_ORIGIN=http://localhost:8080");
       expect(env).toContain("AI_MODEL=llama3.2");
       expect(env).toContain("ADMIN_PASSWORD='password123'");
+      // .env.example must NOT contain the live password
+      const example = readFileSync(path.join(serverDir, ".env.example"), "utf8");
+      expect(example).not.toContain("password123");
+      // .gitignore must list .env so the live file never gets committed
+      const gi = readFileSync(path.join(serverDir, ".gitignore"), "utf8");
+      expect(gi.split(/\r?\n/)).toContain(".env");
 
       // EMBED.md contains the right snippet
       const embed = readFileSync(path.join(serverDir, "EMBED.md"), "utf8");
@@ -330,7 +381,7 @@ describe("init --non-interactive", () => {
 /** Run the CLI asynchronously and resolve to { code, stdout, stderr }. */
 function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const cliPath = path.resolve(__dirname, "..", "dist", "cli.js");
+    const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
     const child = spawn("node", [cliPath, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
