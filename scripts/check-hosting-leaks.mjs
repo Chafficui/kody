@@ -137,13 +137,15 @@ async function scanFile(absPath) {
   try {
     content = await readFile(absPath, "utf8");
   } catch (err) {
-    if (
-      err.code === "EISDIR" ||
-      err.code === "ENOENT" ||
-      err.code === "EACCES"
-    ) {
+    // EISDIR / ENOENT are benign — the candidate may have disappeared
+    // between the directory walk and the file read. Silently skip.
+    if (err.code === "EISDIR" || err.code === "ENOENT") {
       return [];
     }
+    // EACCES is a real permission problem (the file exists but the
+    // scanner cannot read it). Hiding it would let an accidentally
+    // 0o600 forbidden-pattern file slip past the CI guard, so we
+    // rethrow and let the documented internal-error exit path handle it.
     throw err;
   }
 
