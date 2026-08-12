@@ -38,9 +38,13 @@ program
   .option("--server-dir <dir>", "where to write the server files", "./kody-server")
   .option("--server-url <url>", "where the server will listen (e.g. http://localhost:3456); used by generated docs and `kody doctor`")
   .option("--port <port>", "server port the docker-compose / healthcheck bind to", (v) => {
-    const n = Number.parseInt(v, 10);
-    if (!Number.isFinite(n) || n < 1 || n > 65535) {
-      throw new Error(`Invalid --port "${v}". Must be a number between 1 and 65535.`);
+    // Reject non-integer input explicitly. `Number.parseInt` accepts
+    // strings like "3456abc" (parses 3456 and stops) and "1.5"
+    // (parses 1), so we use `Number(v)` and `Number.isInteger` to fail
+    // fast on either. The range check is unchanged.
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      throw new Error(`Invalid --port "${v}". Must be a whole number between 1 and 65535.`);
     }
     return n;
   }, 3456)

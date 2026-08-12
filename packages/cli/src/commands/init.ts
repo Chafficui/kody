@@ -111,10 +111,18 @@ export async function initCommand(opts: InitCommandOptions): Promise<void> {
       adminEmail = await ask("Admin email", "admin@example.com");
     }
     if (!adminPassword) {
-      // The default is a strong generated password; if the user just hits
-      // enter we use it. We never echo the generated password back.
+      // Generate a strong password up-front so empty-input is still a
+      // usable fallback, but DO NOT pass it to `askSecret` as the
+      // placeholder. `askSecret` prints its fallback in the prompt —
+      // passing the freshly generated value would put the secret in the
+      // terminal scrollback (and any scrollback-logging tool). The
+      // fallback shown to the user is a hint that empty input picks
+      // the generated password, not the password itself.
       const generated = generatePassword();
-      adminPassword = await askSecret("Admin password (min 8 chars; enter to use generated)", generated);
+      const entered = await askSecret(
+        "Admin password (min 8 chars; press enter for a generated one)",
+      );
+      adminPassword = entered.length > 0 ? entered : generated;
     }
     if (!serverUrl) {
       serverUrl = await ask("Where will the server listen?", `http://localhost:${port}`);
