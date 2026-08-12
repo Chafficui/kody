@@ -226,23 +226,35 @@ describe("OpenAPI generator", () => {
   });
 
   it("requires x-kody-site-id on every widget-facing operation", () => {
+    // The four mutating / state-bearing widget ops (chat, tickets, sessions,
+    // feedback) gate on the `x-kody-site-id` header so the server can look
+    // up the right site config. /api/config/{siteId} intentionally does
+    // NOT — the site id is already in the URL, and createConfigRouter
+    // resolves it from the path parameter, so generated clients should
+    // only need to send the path value.
     const spec = buildOpenApiSpec() as {
       paths: Record<string, { get?: { parameters?: Array<{ name: string; in: string }> }; post?: { parameters?: Array<{ name: string; in: string }> }; delete?: { parameters?: Array<{ name: string; in: string }> } }>;
     };
-    const widgetOps: Array<[string, string]> = [
-      ["/api/config/{siteId}", "get"],
+    const widgetOpsWithHeader: Array<[string, string]> = [
       ["/api/chat", "post"],
       ["/api/tickets", "post"],
       ["/api/sessions/{sessionId}", "delete"],
       ["/api/feedback", "post"],
     ];
-    for (const [path, method] of widgetOps) {
+    for (const [path, method] of widgetOpsWithHeader) {
       const op = spec.paths[path]?.[method as "get" | "post" | "delete"];
       expect(op, `operation ${method.toUpperCase()} ${path} should exist`).toBeDefined();
       const params = op?.parameters ?? [];
       const header = params.find((p) => p.name === "x-kody-site-id" && p.in === "header");
       expect(header, `${method.toUpperCase()} ${path} must declare x-kody-site-id header`).toBeDefined();
     }
+    // And the inverse: /api/config/{siteId} must NOT require the header.
+    const configGet = spec.paths["/api/config/{siteId}"]?.get;
+    expect(configGet, "GET /api/config/{siteId} should be documented").toBeDefined();
+    const configHeader = (configGet?.parameters ?? []).find(
+      (p) => p.name === "x-kody-site-id" && p.in === "header",
+    );
+    expect(configHeader, "GET /api/config/{siteId} must not require x-kody-site-id header").toBeUndefined();
   });
 
   it("ToolsConfig has no required fields (all are .default() or .optional())", () => {

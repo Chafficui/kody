@@ -111,7 +111,6 @@ export const paths: Record<string, OasPathItem> = {
           description: "Lowercase alphanumeric site identifier.",
           schema: { type: "string", pattern: "^[a-z0-9-]+$" },
         },
-        siteIdHeader,
       ],
       responses: {
         "200": {
@@ -122,6 +121,8 @@ export const paths: Record<string, OasPathItem> = {
             },
           },
         },
+        "400": { description: "Missing or malformed x-kody-site-id header" },
+        "403": { description: "Origin not allowed for this site" },
         "404": { description: "Site not found or disabled" },
       },
     },
@@ -152,7 +153,9 @@ export const paths: Record<string, OasPathItem> = {
             },
           },
         },
-        "400": { description: "Invalid request" },
+        "400": { description: "Missing site id header, invalid request body, or unknown site id" },
+        "403": { description: "Origin not allowed for this site" },
+        "404": { description: "Site not found or disabled" },
         "429": { description: "Rate limit exceeded" },
       },
     },
@@ -183,7 +186,13 @@ export const paths: Record<string, OasPathItem> = {
             },
           },
         },
-        "400": { description: "Tickets not enabled or invalid request" },
+        "400": {
+          description:
+            "Tickets not enabled, invalid request, or unknown / disabled site id",
+        },
+        "403": { description: "Origin not allowed for this site" },
+        "404": { description: "Site not found or disabled" },
+        "429": { description: "Rate limit exceeded" },
       },
     },
   },
@@ -205,6 +214,9 @@ export const paths: Record<string, OasPathItem> = {
       ],
       responses: {
         "204": { description: "Session deleted" },
+        "400": { description: "Missing or malformed x-kody-site-id header" },
+        "403": { description: "Origin not allowed for this site" },
+        "404": { description: "Site not found or disabled" },
       },
     },
   },
@@ -226,7 +238,9 @@ export const paths: Record<string, OasPathItem> = {
       },
       responses: {
         "201": { description: "Feedback stored" },
-        "400": { description: "Invalid request" },
+        "400": { description: "Invalid request, missing site id header, or unknown site id" },
+        "403": { description: "Origin not allowed for this site" },
+        "404": { description: "Site not found or disabled" },
       },
     },
   },
@@ -247,7 +261,14 @@ export const paths: Record<string, OasPathItem> = {
         },
       },
       responses: {
-        "200": { description: "Login successful" },
+        "200": {
+          description: "Login successful",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/AdminLoginResponse" },
+            },
+          },
+        },
         "401": { description: "Invalid credentials" },
       },
     },
@@ -382,8 +403,21 @@ export const paths: Record<string, OasPathItem> = {
   "/api/admin/sites/{siteId}/scraping/{sourceIndex}/rescrape": {
     summary: "Re-run the scraper for one source",
     parameters: [
-      { name: "siteId", in: "path", required: true, schema: { type: "string" } },
-      { name: "sourceIndex", in: "path", required: true, schema: { type: "integer" } },
+      {
+        name: "siteId",
+        in: "path",
+        required: true,
+        description: "Lowercase alphanumeric site identifier.",
+        schema: { type: "string", pattern: "^[a-z0-9-]+$" },
+      },
+      {
+        name: "sourceIndex",
+        in: "path",
+        required: true,
+        description:
+          "Zero-based index into the site's `knowledge.sources` array (see GET /api/admin/sites/:siteId/scraping for the current ordering).",
+        schema: { type: "integer", minimum: 0 },
+      },
     ],
     post: {
       summary: "Trigger a re-scrape",
@@ -450,7 +484,7 @@ export const paths: Record<string, OasPathItem> = {
       security: adminSecurity,
       parameters: [
         { name: "level", in: "query", schema: { type: "string", enum: ["debug", "info", "warn", "error"] } },
-        { name: "since", in: "query", schema: { type: "integer", description: "Epoch millis" } },
+        { name: "since", in: "query", description: "Epoch millis", schema: { type: "integer" } },
         { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 1000 } },
       ],
       responses: {
