@@ -215,6 +215,50 @@ describe("runAgent", () => {
     expect(calls.some((c) => c.event === "done")).toBe(true);
   });
 
+  it("caps a multi-tool-call response at maxToolCalls and stops the loop", async () => {
+    // One model response with TWO tool calls. With maxToolCalls: 1, the
+    // executor must run exactly once and the loop must exit. This is
+    // the branch the previous "one call per response" test didn't cover.
+    mockFetch.mockImplementation(
+      sseResponseFactory([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { id: "tc1", index: 0, function: { name: "ping", arguments: "{}" } },
+                  { id: "tc2", index: 1, function: { name: "ping", arguments: "{}" } },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        },
+      ]),
+    );
+    const { calls, cb } = makeCallbacks();
+    const exec = makeExecutor({
+      execute: vi.fn().mockResolvedValue({
+        toolCallId: "tc1",
+        name: "ping",
+        result: "ok",
+        displayText: "ping",
+      }),
+    });
+    const result = await runAgent({
+      config: makeConfig({ maxToolCalls: 1 }),
+      messages: [{ role: "user", content: "do both" }],
+      toolExecutor: exec,
+      tools: [],
+      callbacks: cb,
+      scrubberConfig,
+    });
+    expect(exec.execute).toHaveBeenCalledTimes(1);
+    expect(result.toolCallsMade).toBe(1);
+    // The done callback fires exactly once on the limit-hit branch.
+    expect(calls.filter((c) => c.event === "done")).toHaveLength(1);
+  });
+
   it("surfaces tool errors to the model without crashing", async () => {
     mockFetch
       .mockImplementationOnce(
