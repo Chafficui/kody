@@ -102,15 +102,19 @@ describe("KodyWidget public API", () => {
       expect(headers["x-kody-user-traits"]).toBe(JSON.stringify({ plan: "pro" }));
     });
 
-    it("omits identity headers after identify(undefined)", async () => {
+    it("omits identity headers after identify(undefined) clears a populated identity", async () => {
       // The docs promise that passing undefined clears the user id.
-      // Before the fix, the call was rejected at the type level AND a
-      // JS caller would still store an identity object (with
-      // userId === undefined) that buildMessageHeaders() would treat
-      // as a truthy identity and emit the header anyway. We use a
-      // fresh widget to avoid the in-flight sendMessage guard
-      // (mirroring the setUserContext "removes the header" test).
+      // Before the fix, identify(undefined) was rejected at the type
+      // level AND a JS caller would still store an identity object
+      // (with userId === undefined) that buildMessageHeaders() would
+      // treat as a truthy identity and emit the header anyway.
+      //
+      // Exercise the clearing path: set an identity via identify(),
+      // then clear it with identify(undefined) before sendMessage. A
+      // separate test ("sends x-kody-user-id on every chat request")
+      // covers the populated identity → header case.
       const widget = await makeWidget();
+      widget.identify("u-1", { plan: "pro" });
       widget.identify(undefined);
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(`data: ${JSON.stringify({ type: "done" })}\n\n`, {
@@ -119,7 +123,6 @@ describe("KodyWidget public API", () => {
         }),
       );
       globalThis.fetch = fetchMock;
-
       await widget.sendMessage("hello");
       const chatCall = fetchMock.mock.calls.find((c) => (c[0] as string).includes("/api/chat"));
       expect(chatCall).toBeDefined();
