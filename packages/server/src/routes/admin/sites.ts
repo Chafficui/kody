@@ -1,12 +1,12 @@
 import { Router, type Router as RouterType } from "express";
-import { siteConfigSchema } from "@kody/shared";
+import { siteConfigSchema, redactConfigSecrets } from "@kody/shared";
 import type { SiteStore } from "../../services/site-store.js";
 
 export function createAdminSitesRouter(siteStore: SiteStore): RouterType {
   const router: RouterType = Router();
 
   router.get("/", (_req, res) => {
-    const sites = siteStore.listSites();
+    const sites = siteStore.listSites().map(redactConfigSecrets);
     res.json(sites);
   });
 
@@ -17,19 +17,21 @@ export function createAdminSitesRouter(siteStore: SiteStore): RouterType {
       const all = siteStore.listSites();
       const found = all.find((s) => s.siteId === req.params.siteId);
       if (found) {
-        res.json(found);
+        res.json(redactConfigSecrets(found));
         return;
       }
       res.status(404).json({ error: { message: "Site not found" } });
       return;
     }
-    res.json(config);
+    res.json(redactConfigSecrets(config));
   });
 
   router.post("/", (req, res) => {
     try {
       const site = siteStore.createSite(req.body);
-      res.status(201).json(site);
+      // Echo a redacted view of the created site; the in-memory store
+      // still holds the unredacted secret, ready for the next update.
+      res.status(201).json(redactConfigSecrets(site));
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
         res.status(409).json({ error: { message: "Site ID already exists" } });
@@ -43,7 +45,7 @@ export function createAdminSitesRouter(siteStore: SiteStore): RouterType {
   router.put("/:siteId", (req, res) => {
     try {
       const site = siteStore.updateSite(req.params.siteId, req.body);
-      res.json(site);
+      res.json(redactConfigSecrets(site));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Invalid site configuration";
       const status = message.includes("not found") ? 404 : 400;

@@ -24,11 +24,22 @@ import { AdminAuthService } from "./services/admin/auth-service.js";
 import { UrlFetcher } from "./services/knowledge/url-fetcher.js";
 import { ScrapeStore } from "./services/scrape-store.js";
 import { createAdminScrapingRouter } from "./routes/admin/scraping.js";
+import { createAdminToolsRouter } from "./routes/admin/tools.js";
+import { ToolExecutor } from "./services/tools/executor.js";
+import { createPublicCorsForSiteHeader, createPublicCorsForConfigRoute, createWidgetCors } from "./middleware/public-cors.js";
 
 export interface AppDependencies {
   db: Database.Database;
   rateLimiter?: RateLimiter;
   conversationStore?: ConversationStore;
+  /**
+   * Optional pre-configured ToolExecutor. When supplied, the admin tools
+   * test endpoint and any other in-process tool surface share this
+   * instance — including any handlers registered via the executor's
+   * ToolRegistry. When omitted, the app creates a fresh executor with
+   * no in-process handlers.
+   */
+  toolExecutor?: ToolExecutor;
 }
 
 export function createApp(
@@ -41,6 +52,13 @@ export function createApp(
   const conversationStore = deps.conversationStore ?? new ConversationStore();
   const urlFetcher = new UrlFetcher();
   const scrapeStore = new ScrapeStore(deps.db, urlFetcher, siteStore);
+  // The admin tools test surface reuses the application's executor so
+  // any in-process tools registered at startup (via Toolkit.export() →
+  // getRegistry().register()) are reachable from the admin "Test tool"
+  // button. A shared instance is also the only safe way to thread a
+  // retriever into the executor without the admin route re-instantiating
+  // it.
+  const toolExecutor = deps.toolExecutor ?? new ToolExecutor(null);
 
   app.use(
     helmet({
@@ -51,14 +69,65 @@ export function createApp(
   );
   app.use(express.json({ limit: "2mb" }));
 
+  // CORS handling is intentionally split:
+  //  - Public widget APIs (/api/chat, /api/tickets, /api/sessions,
+  //    /api/feedback, /api/config/:siteId, /widget.js) validate the
+  //    request Origin against the per-site allowedOrigins allowlist
+  //    and emit a non-credentialed Access-Control-Allow-Origin so the
+  //    embedded widget can read responses cross-origin. Preflights
+  //    (OPTIONS) on those routes return 204 with the preflight headers
+  //    — see ./middleware/public-cors.ts.
+  //  - The admin API requires bearer authentication for state-changing
+  //    methods (see adminAuth), which the React admin SPA already
+  //    sends. We deliberately do NOT reflect the request Origin into
+  //    `Access-Control-Allow-Origin` and do NOT set
+  //    `Access-Control-Allow-Credentials` — credentialed CORS + reflected
+  //    origin + cookie auth is a CSRF gadget. The admin routes short-
+  //    circuit OPTIONS below without any CORS headers.
+  const publicCorsForSiteHeader = createPublicCorsForSiteHeader(siteStore);
+  const publicCorsForConfigRoute = createPublicCorsForConfigRoute(siteStore);
+  const widgetCors = createWidgetCors();
+
+  app.use("/health", healthRouter);
+  app.use("/widget.js", widgetCors, createWidgetRouter());
+  app.use("/api/config", publicCorsForConfigRoute, createConfigRouter(siteStore));
+
+  const siteAuth = createSiteAuth(siteStore);
+  const rateLimit = createRateLimitMiddleware(rateLimiter);
+  app.use(
+    "/api/chat",
+    publicCorsForSiteHeader,
+    siteAuth,
+    rateLimit,
+    createChatRouter(conversationStore, urlFetcher, deps.db),
+  );
+  app.use(
+    "/api/tickets",
+    publicCorsForSiteHeader,
+    siteAuth,
+    rateLimit,
+    createTicketsRouter(conversationStore),
+  );
+  app.use(
+    "/api/sessions",
+    publicCorsForSiteHeader,
+    siteAuth,
+    createSessionsRouter(conversationStore),
+  );
+  app.use(
+    "/api/feedback",
+    publicCorsForSiteHeader,
+    siteAuth,
+    createFeedbackRouter(deps.db),
+  );
+
+  app.use("/api/admin", createAdminAuthRouter(authService));
+
+  // Admin and other non-public routes: short-circuit OPTIONS preflights
+  // with no CORS headers. The browser sees a missing
+  // Access-Control-Allow-Origin and refuses to read the response —
+  // exactly what we want for the bearer-auth API surface.
   app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-kody-site-id, Authorization");
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-    }
     if (req.method === "OPTIONS") {
       res.status(204).end();
       return;
@@ -66,22 +135,10 @@ export function createApp(
     next();
   });
 
-  app.use("/health", healthRouter);
-  app.use("/widget.js", createWidgetRouter());
-  app.use("/api/config", createConfigRouter(siteStore));
-
-  const siteAuth = createSiteAuth(siteStore);
-  const rateLimit = createRateLimitMiddleware(rateLimiter);
-  app.use("/api/chat", siteAuth, rateLimit, createChatRouter(conversationStore, urlFetcher, deps.db));
-  app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
-  app.use("/api/sessions", siteAuth, createSessionsRouter(conversationStore));
-  app.use("/api/feedback", siteAuth, createFeedbackRouter(deps.db));
-
-  app.use("/api/admin", createAdminAuthRouter(authService));
-
   const adminAuth = createAdminAuth(authService);
   app.use("/api/admin/sites", adminAuth, createAdminSitesRouter(siteStore));
   app.use("/api/admin/sites", adminAuth, createAdminScrapingRouter(scrapeStore));
+  app.use("/api/admin/sites", adminAuth, createAdminToolsRouter(siteStore, toolExecutor));
   app.use("/api/admin/users", adminAuth, createAdminUsersRouter(authService));
   app.use("/api/admin/logs", adminAuth, createAdminLogsRouter());
 
@@ -133,7 +190,7 @@ export function createApp(
       </div>
     </div>
   </div>
-  <script src="/widget.js" data-site-id="kody-website"></script>
+  <script src="/widget.js" data-site-id="demo"></script>
 </body>
 </html>`);
   });

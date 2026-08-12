@@ -54,4 +54,41 @@ describe("GET /api/config/:siteId", () => {
     const res = await request(app).get("/api/config/nonexistent");
     expect(res.status).toBe(404);
   });
+
+  it("echoes a validated Origin as Access-Control-Allow-Origin", async () => {
+    const res = await request(app)
+      .get("/api/config/test-site")
+      .set("Origin", "https://example.com");
+    expect(res.status).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe("https://example.com");
+    expect(res.headers.vary).toMatch(/Origin/);
+  });
+
+  it("rejects a disallowed Origin with 403", async () => {
+    const res = await request(app)
+      .get("/api/config/test-site")
+      .set("Origin", "https://malicious.test");
+    expect(res.status).toBe(403);
+    expect(res.body.error?.message).toMatch(/not allowed/i);
+  });
+
+  it("responds to an OPTIONS preflight with 204 and the CORS headers", async () => {
+    const res = await request(app)
+      .options("/api/config/test-site")
+      .set("Origin", "https://example.com")
+      .set("Access-Control-Request-Method", "GET")
+      .set("Access-Control-Request-Headers", "X-Kody-Site-Id");
+    expect(res.status).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBe("https://example.com");
+    expect(res.headers["access-control-allow-methods"]).toBeDefined();
+    expect(res.headers["access-control-allow-headers"]).toMatch(/X-Kody-Site-Id/);
+    expect(res.headers["access-control-max-age"]).toBeDefined();
+  });
+
+  it("does not set Access-Control-Allow-Credentials on the public APIs", async () => {
+    const res = await request(app)
+      .get("/api/config/test-site")
+      .set("Origin", "https://example.com");
+    expect(res.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
 });

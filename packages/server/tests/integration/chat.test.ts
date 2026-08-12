@@ -128,4 +128,28 @@ describe("POST /api/chat", () => {
       .send({ siteId: "test-site", message: "Hello" });
     expect(res.status).toBe(403);
   });
+
+  it("emits non-credentialed CORS headers for /api/chat", async () => {
+    const res = await request(app)
+      .options("/api/chat")
+      .set("x-kody-site-id", "test-site")
+      .set("Origin", "https://example.com")
+      .set("Access-Control-Request-Method", "POST")
+      .set("Access-Control-Request-Headers", "X-Kody-Site-Id, Content-Type");
+    expect(res.status).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBe("https://example.com");
+    expect(res.headers["access-control-allow-methods"]).toBeDefined();
+    expect(res.headers["access-control-allow-headers"]).toMatch(/X-Kody-Site-Id/);
+    expect(res.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
+
+  it("does not emit CORS headers on /api/admin/* OPTIONS", async () => {
+    const res = await request(app)
+      .options("/api/admin/sites")
+      .set("Origin", "https://example.com");
+    // Admin routes short-circuit OPTIONS with no ACAO header so the
+    // browser blocks the response. This is the CSRF-defence posture.
+    expect(res.status).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
 });

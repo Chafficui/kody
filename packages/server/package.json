@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@kody/shared": "workspace:*",
+    "@kody/tools": "workspace:*",
     "@mozilla/readability": "^0.6.0",
     "argon2": "^0.41.0",
     "better-sqlite3": "^12.11.1",

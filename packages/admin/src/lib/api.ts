@@ -118,6 +118,48 @@ export async function fetchUsers(): Promise<unknown[]> {
   return res.json();
 }
 
+// Tool test (admin only)
+export interface ToolTestResult {
+  ok: boolean;
+  name: string;
+  result: string;
+  truncated: boolean;
+  displayText: string;
+  tool: {
+    name: string;
+    description: string;
+    endpoint: string;
+    method: string;
+  };
+}
+
+export async function testTool(
+  siteId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  tool?: Record<string, unknown>,
+): Promise<ToolTestResult> {
+  const res = await apiFetch(
+    `/api/admin/sites/${encodeURIComponent(siteId)}/tools/${encodeURIComponent(toolName)}/test`,
+    {
+      method: "POST",
+      // When the caller passes a tool definition (the current form
+      // draft), the server runs the test against that draft instead of
+      // the saved site config — so unsaved URL / method / auth edits
+      // are reflected immediately.
+      body: JSON.stringify({ arguments: args, tool }),
+    },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      (body && typeof body === "object" && "error" in body && body.error?.message) ||
+      `Tool test failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return body as ToolTestResult;
+}
+
 export async function createUser(email: string, password: string): Promise<unknown> {
   const res = await apiFetch("/api/admin/users", {
     method: "POST",

@@ -38,7 +38,7 @@ export async function runAgent(options: {
 
   const workingMessages = [...messages];
 
-  while (totalToolCalls <= maxCalls) {
+  while (totalToolCalls < maxCalls) {
     const result = await streamChatCompletion(
       config.ai,
       workingMessages,
@@ -77,10 +77,12 @@ export async function runAgent(options: {
       })),
     });
 
+    let hitLimit = false;
     for (const toolCall of result.toolCalls) {
-      totalToolCalls++;
-      if (totalToolCalls > maxCalls) break;
-
+      if (totalToolCalls >= maxCalls) {
+        hitLimit = true;
+        break;
+      }
       const execResult = await toolExecutor.execute(toolCall, config);
       callbacks.onToolStart(execResult.name, execResult.displayText);
 
@@ -91,6 +93,12 @@ export async function runAgent(options: {
       });
 
       callbacks.onToolEnd(execResult.name);
+      totalToolCalls++;
+    }
+
+    if (hitLimit) {
+      callbacks.onDone();
+      return { content: fullContent, toolCallsMade: totalToolCalls };
     }
 
     fullContent = "";
