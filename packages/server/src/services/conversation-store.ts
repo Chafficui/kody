@@ -27,9 +27,31 @@ export class ConversationStore {
         existing.lastActivity = Date.now();
         return existing;
       }
+      // A sessionId was supplied but either the entry does not
+      // exist (expired conversation) or it belongs to a
+      // different site. In the cross-site case we MUST NOT reuse
+      // the incoming id — `conversations.set(newSessionId, ...)`
+      // would silently overwrite the other site's entry under
+      // the same key, allowing a later write to land in the
+      // wrong site's transcript. Mint a fresh UUID instead so
+      // each site retains a stable, isolated conversation.
+      const newSessionId = existing ? randomUUID() : sessionId || randomUUID();
+      const conversation: Conversation = {
+        sessionId: newSessionId,
+        siteId,
+        messages: [],
+        lastActivity: Date.now(),
+      };
+
+      if (this.conversations.size >= MAX_CONVERSATIONS) {
+        this.evictOldest();
+      }
+
+      this.conversations.set(newSessionId, conversation);
+      return conversation;
     }
 
-    const newSessionId = sessionId || randomUUID();
+    const newSessionId = randomUUID();
     const conversation: Conversation = {
       sessionId: newSessionId,
       siteId,
@@ -43,6 +65,31 @@ export class ConversationStore {
 
     this.conversations.set(newSessionId, conversation);
     return conversation;
+  }
+
+  /**
+   * Return the conversation for `sessionId` only when the
+   * supplied `siteId` matches the conversation's owning site.
+   * Returns `null` when the entry is missing OR when it is
+   * owned by a different site.
+   *
+   * Used by the chat route's write-time session resolver to
+   * distinguish "still my site's conversation" from "a stale
+   * or cross-site handle that must not be written into". The
+   * check is intentionally a single Map lookup + site equality
+   * test so it is atomic with respect to concurrent
+   * `getOrCreate` calls — the previous `has(initialSessionId)`
+   * helper accepted any entry, which let a Site A stream
+   * write its assistant message into a Site B conversation
+   * after a Site B request had replaced the entry under the
+   * same id.
+   */
+  getIfOwned(siteId: string, sessionId: string): Conversation | null {
+    const existing = this.conversations.get(sessionId);
+    if (!existing) return null;
+    if (existing.siteId !== siteId) return null;
+    existing.lastActivity = Date.now();
+    return existing;
   }
 
   addMessage(sessionId: string, message: ChatMessage): void {

@@ -38,6 +38,46 @@ describe("ConversationStore", () => {
     expect(second.siteId).toBe("site-2");
   });
 
+  it("mints a fresh sessionId when a cross-site request supplies a site-1 handle", () => {
+    // Cross-site collision: a Site A conversation exists at
+    // sessionId "abc"; a Site B request re-uses "abc" as its
+    // session handle. The cross-site entry must NOT overwrite
+    // Site A's row, and the returned sessionId for Site B
+    // must be a brand-new UUID — otherwise a later write
+    // against "abc" would land in whichever site last
+    // registered itself, breaking site isolation.
+    store = new ConversationStore();
+    const first = store.getOrCreate("site-1");
+    const second = store.getOrCreate("site-2", first.sessionId);
+    expect(second.sessionId).not.toBe(first.sessionId);
+    // Both conversations must still be reachable by their own
+    // sessionIds (Site A's row is not silently overwritten).
+    expect(store.getIfOwned("site-1", first.sessionId)?.siteId).toBe("site-1");
+    expect(store.getIfOwned("site-2", second.sessionId)?.siteId).toBe("site-2");
+  });
+
+  it("getIfOwned returns null for unknown sessionId", () => {
+    store = new ConversationStore();
+    expect(store.getIfOwned("site-1", "does-not-exist")).toBeNull();
+  });
+
+  it("getIfOwned returns null when the entry belongs to a different site", () => {
+    store = new ConversationStore();
+    const first = store.getOrCreate("site-1");
+    // The same sessionId is registered under site-1; a
+    // site-2 lookup must report "not mine" rather than hand
+    // back the site-1 entry.
+    expect(store.getIfOwned("site-2", first.sessionId)).toBeNull();
+  });
+
+  it("getIfOwned returns the entry when siteId matches", () => {
+    store = new ConversationStore();
+    const first = store.getOrCreate("site-1");
+    const owned = store.getIfOwned("site-1", first.sessionId);
+    expect(owned).not.toBeNull();
+    expect(owned?.sessionId).toBe(first.sessionId);
+  });
+
   it("adds messages to a conversation", () => {
     store = new ConversationStore();
     const conv = store.getOrCreate("site-1");

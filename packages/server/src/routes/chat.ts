@@ -158,6 +158,13 @@ function generateTopicSuggestions(
  * not write its assistant message into a different session because
  * the captured `initialSessionId` is now stale.
  *
+ * The lookup is site-aware: if the entry at `initialSessionId` is
+ * owned by a different site (e.g. a concurrent request from
+ * another site re-used the same handle) we must NOT write our
+ * assistant message into it. `getIfOwned` returns `null` for that
+ * case, and we fall through to the fresh-session branch — which
+ * also mints a brand-new id, never re-uses the cross-site handle.
+ *
  * If the original conversation has expired, a fresh one is created
  * and the assistant message is written there. We seed the new
  * session with the `session` event id we already shipped to the
@@ -176,15 +183,25 @@ function resolveSessionIdForWrite(
   initialSessionId: string,
 ): string {
   // Happy path: the conversation we created at request start is
-  // still in the map. Use the same sessionId. We use `has` (not
-  // `getMessages`) because `getMessages` returns an empty array
-  // for a missing conversation, which would always be truthy.
-  if (conversationStore.has(initialSessionId)) {
-    return initialSessionId;
+  // still in the map AND it is owned by the same site. We use
+  // `getIfOwned` (a single Map lookup + site equality test) so
+  // a concurrent request from a different site that replaced
+  // the entry under the same id does not trick us into writing
+  // the assistant message into the other site's conversation.
+  const owned = conversationStore.getIfOwned(configSiteId, initialSessionId);
+  if (owned) {
+    return owned.sessionId;
   }
-  // Fallback: original conversation expired. Re-derive (or create)
-  // a fresh one keyed by the sessionId we already reported to the
-  // client, so its session handle keeps resolving.
+  // Fallback: the original conversation expired, OR the entry
+  // was replaced by another site. In the cross-site case the
+  // fallback path is also what mints the fresh id — we seed
+  // the new session with the `session` event id we already
+  // shipped to the client (the `initialSessionId`), not with
+  // the request-supplied `sessionId`. Re-using the
+  // request-supplied id is safe here because `getOrCreate`
+  // will mint a fresh UUID when the existing entry's site
+  // doesn't match — see the cross-site branch in
+  // `ConversationStore.getOrCreate`.
   return conversationStore.getOrCreate(
     configSiteId,
     requestSessionId ?? initialSessionId,
