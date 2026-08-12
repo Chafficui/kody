@@ -137,12 +137,17 @@ export async function testTool(
   siteId: string,
   toolName: string,
   args: Record<string, unknown>,
+  tool?: Record<string, unknown>,
 ): Promise<ToolTestResult> {
   const res = await apiFetch(
     `/api/admin/sites/${encodeURIComponent(siteId)}/tools/${encodeURIComponent(toolName)}/test`,
     {
       method: "POST",
-      body: JSON.stringify({ arguments: args }),
+      // When the caller passes a tool definition (the current form
+      // draft), the server runs the test against that draft instead of
+      // the saved site config — so unsaved URL / method / auth edits
+      // are reflected immediately.
+      body: JSON.stringify({ arguments: args, tool }),
     },
   );
   const body = await res.json().catch(() => ({}));

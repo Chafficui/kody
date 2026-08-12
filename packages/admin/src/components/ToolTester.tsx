@@ -120,14 +120,19 @@ export function ToolTester({ siteId, tool, onClose }: ToolTesterProps) {
     setError(null);
     setResult(null);
     try {
-      const r = await testTool(siteId, tool.name, parsedArgs);
+      // Pass the form's current tool definition so the server runs the
+      // test against the draft (unsaved URL / method / headers). The
+      // server validates it with the same customToolSchema as the
+      // saved config; a draft with an invalid shape produces a 400 with
+      // a clear error message instead of running against stale data.
+      const r = await testTool(siteId, tool.name, parsedArgs, tool as unknown as Record<string, unknown>);
       setResult(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Tool test failed");
     } finally {
       setRunning(false);
     }
-  }, [parsedArgs, siteId, tool.name]);
+  }, [parsedArgs, siteId, tool]);
 
   const curlExample = useMemo(() => {
     const body = JSON.stringify({
@@ -143,11 +148,23 @@ export function ToolTester({ siteId, tool, onClose }: ToolTesterProps) {
       if (typeof v !== "string") continue;
       headerLines.push(`  -H ${shq(`${k}: ${v}`)}`);
     }
-    return [
+    // Auth and signing flags are placeholders only. The server stores the
+    // real values (sometimes as env-var references) and stamps them in at
+    // call time — embedding the literal value here would be a copy-paste
+    // security hazard. We render a comment + template flag so the user
+    // knows the request needs those headers without exposing secrets.
+    const authFlag = `# If the tool uses auth, supply it here (do not paste secrets):\n#   -H 'Authorization: Bearer YOUR_TOKEN'`;
+    const signFlag = `# If the tool signs the body, the server adds X-Kody-Signature automatically.`;
+    const isBodyless = method === "GET" || method === "HEAD";
+    const lines = [
+      `# Template request for tool "${tool.name}" — replace placeholders before running.`,
+      authFlag,
+      signFlag,
       `curl -X ${method} ${shq(tool.endpoint.url)} \\`,
       ...headerLines,
-      `  -d ${shq(body)}`,
-    ].join("\n");
+    ];
+    if (!isBodyless) lines.push(`  -d ${shq(body)}`);
+    return lines.join("\n");
   }, [tool, parsedArgs]);
 
   const copy = async (text: string, kind: "result" | "curl") => {
@@ -300,7 +317,8 @@ export function ToolTester({ siteId, tool, onClose }: ToolTesterProps) {
                 {copied === "curl" ? "Copied" : "Copy curl"}
               </button>
               <p className="text-xs text-muted-foreground">
-                Use this to call the tool from outside the admin.
+                Use this as a starting template. The server stores auth and
+                signing values, so copy-paste secrets never appear here.
               </p>
             </div>
           </details>
