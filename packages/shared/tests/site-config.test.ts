@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { siteConfigSchema, toPublicConfig } from "../src/validators/site-config.js";
+import { siteConfigSchema, toPublicConfig, redactSiteConfigForRead } from "../src/validators/site-config.js";
 
 const validMinimalConfig = {
   siteId: "test-site",
@@ -390,5 +390,68 @@ describe("toPublicConfig", () => {
     expect((pub as Record<string, unknown>)["guardrails"]).toBeUndefined();
     expect((pub as Record<string, unknown>)["knowledge"]).toBeUndefined();
     expect((pub.tickets as Record<string, unknown>)["providers"]).toBeUndefined();
+  });
+});
+
+describe("redactSiteConfigForRead", () => {
+  it("replaces the AI apiKey with the redacted placeholder", () => {
+    const full = siteConfigSchema.parse({
+      ...validMinimalConfig,
+      ai: { ...validMinimalConfig.ai, apiKey: "sk-real-secret-key" },
+    });
+    const redacted = redactSiteConfigForRead(full);
+    expect(redacted.ai.apiKey).toBe("***");
+    // Source object must not be mutated — the redaction has to return a
+    // fresh copy or admin GET responses could leak through a shared
+    // reference.
+    expect(full.ai.apiKey).toBe("sk-real-secret-key");
+  });
+
+  it("redacts the credential on every ticket-provider branch", () => {
+    const full = siteConfigSchema.parse({
+      ...validMinimalConfig,
+      tickets: {
+        enabled: true,
+        providers: [
+          { provider: "jira", baseUrl: "https://x.atlassian.net", projectKey: "K", apiToken: "jira-tok", email: "ops@x.com" },
+          { provider: "github", owner: "o", repo: "r", token: "gh-tok" },
+          { provider: "linear", apiKey: "lin-key", teamId: "T" },
+          { provider: "email", to: "ops@x.com", smtpPass: "smtp-tok" },
+          { provider: "webhook", url: "https://hooks.x.com", secret: "hook-secret" },
+        ],
+      },
+    });
+    const redacted = redactSiteConfigForRead(full);
+    const byProvider = Object.fromEntries(redacted.tickets.providers.map((p) => [p.provider, p])) as Record<string, Record<string, unknown>>;
+    expect(byProvider.jira?.apiToken).toBe("***");
+    expect(byProvider.github?.token).toBe("***");
+    expect(byProvider.linear?.apiKey).toBe("***");
+    expect(byProvider.email?.smtpPass).toBe("***");
+    expect(byProvider.webhook?.secret).toBe("***");
+    // Non-secret fields are preserved so the admin UI keeps its context.
+    expect(byProvider.jira?.projectKey).toBe("K");
+    expect(byProvider.github?.owner).toBe("o");
+    expect(byProvider.linear?.teamId).toBe("T");
+  });
+
+  it("leaves optional secrets unset rather than synthesising a placeholder", () => {
+    // smtpPass and webhook.secret are optional in the Zod schema — when
+    // absent, the redacted output should not invent a "***" value, which
+    // would falsely advertise the field as configured.
+    const full = siteConfigSchema.parse({
+      ...validMinimalConfig,
+      tickets: {
+        enabled: true,
+        providers: [
+          { provider: "email", to: "ops@x.com" },
+          { provider: "webhook", url: "https://hooks.x.com" },
+        ],
+      },
+    });
+    const redacted = redactSiteConfigForRead(full);
+    const email = redacted.tickets.providers.find((p) => p.provider === "email");
+    const webhook = redacted.tickets.providers.find((p) => p.provider === "webhook");
+    expect((email as Record<string, unknown>).smtpPass).toBeUndefined();
+    expect((webhook as Record<string, unknown>).secret).toBeUndefined();
   });
 });

@@ -51,6 +51,7 @@ RUN pnpm install --frozen-lockfile --prod
 
 # Copy built output
 COPY --from=build /app/packages/shared/dist/ packages/shared/dist/
+COPY --from=build /app/packages/shared/openapi.yaml packages/shared/openapi.yaml
 COPY --from=build /app/packages/server/dist/ packages/server/dist/
 
 # Copy widget dist (served via /widget.js route)

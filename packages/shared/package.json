@@ -29,12 +29,16 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "generate:openapi": "tsx scripts/generate-openapi.ts"
   },
   "dependencies": {
+    "js-yaml": "^4.1.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "tsx": "^4.19.0",
     "typescript": "~5.8.0",
     "vitest": "^3.2.6"
   }

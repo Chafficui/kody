@@ -88,6 +88,19 @@ const faqKnowledgeSchema = z.object({
   url: z.string().url().optional(),
 });
 
+/**
+ * Each branch is exported individually so the OpenAPI generator can
+ * reference them by name (`$ref: "#/components/schemas/KnowledgeSourceText"`)
+ * instead of inlining an anonymous oneOf. The discriminated union still
+ * validates the same shapes — these are just the named handles.
+ */
+export {
+  textKnowledgeSchema as textKnowledgeSourceSchema,
+  urlKnowledgeSchema as urlKnowledgeSourceSchema,
+  fileKnowledgeSchema as fileKnowledgeSourceSchema,
+  faqKnowledgeSchema as faqKnowledgeSourceSchema,
+};
+
 export const knowledgeSourceSchema = z.discriminatedUnion("type", [
   textKnowledgeSchema,
   urlKnowledgeSchema,
@@ -151,6 +164,19 @@ const webhookProviderSchema = z.object({
   secret: z.string().optional(),
 });
 
+/**
+ * Each branch is exported individually so the OpenAPI generator can
+ * reference them by name (`$ref: "#/components/schemas/TicketProviderJira"`)
+ * instead of inlining an anonymous oneOf.
+ */
+export {
+  jiraProviderSchema as jiraTicketProviderSchema,
+  githubProviderSchema as githubTicketProviderSchema,
+  linearProviderSchema as linearTicketProviderSchema,
+  emailProviderSchema as emailTicketProviderSchema,
+  webhookProviderSchema as webhookTicketProviderSchema,
+};
+
 export const ticketProviderSchema = z.discriminatedUnion("provider", [
   jiraProviderSchema,
   githubProviderSchema,
@@ -202,6 +228,13 @@ const customToolSchema = z.object({
     timeoutMs: z.number().int().min(1000).max(30000).default(10000),
   }),
 });
+
+/**
+ * Exported so the OpenAPI generator can emit a `CustomTool` component
+ * derived from the same Zod definition the server validates against,
+ * instead of mirroring the shape by hand.
+ */
+export { customToolSchema };
 
 export const toolsSchema = z.object({
   enabled: z.boolean().default(false),
@@ -313,4 +346,64 @@ export function toPublicConfig(config: SiteConfig): PublicSiteConfig {
     conversationStarters: config.conversationStarters,
     ...(Object.keys(sourceUrls).length > 0 ? { sourceUrls } : {}),
   };
+}
+
+/**
+ * Placeholder written to a redacted secret field. Equal in length to the
+ * literal `"***"` so the JSON payload's shape is recognisably redacted
+ * (operators can scan a list of sites and see which ones have an
+ * `apiKey` set vs. unset without learning the value).
+ */
+export const REDACTED_SECRET = "***";
+
+/**
+ * Return a deep-cloned `SiteConfig` with every secret-bearing field
+ * replaced by the redacted placeholder. The admin UI uses this on its
+ * GET endpoints so a session cookie alone cannot exfiltrate live
+ * credentials — the admin user sees "this field is set" without seeing
+ * the value, and the re-create / re-update paths still accept a real
+ * secret when the operator wants to rotate it.
+ *
+ * The redaction set is mirrored by `redactSiteConfigForRead` in
+ * `openapi/openapi-spec.ts` — when adding a new secret field, update
+ * both: this function (runtime) and the OAS redactor (spec).
+ */
+export function redactSiteConfigForRead(config: SiteConfig): SiteConfig {
+  // structuredClone preserves every shape (Date, Set, etc.) — a JSON
+  // round-trip would coerce Dates to strings and lose the Map / Set
+  // fields if any are added later.
+  const cloned = structuredClone(config);
+  // AI provider api key — the only secret in the AI block.
+  if (cloned.ai && typeof cloned.ai.apiKey === "string" && cloned.ai.apiKey.length > 0) {
+    cloned.ai = { ...cloned.ai, apiKey: REDACTED_SECRET };
+  }
+  // Ticket provider credentials: each branch has a different field
+  // name (apiToken, token, apiKey, smtpPass, secret) and a different
+  // sentinel (we know which one to redact by reading the `provider`
+  // discriminator). Optional fields are left as-is when absent so we
+  // don't synthesise a placeholder for an unset value.
+  if (cloned.tickets && Array.isArray(cloned.tickets.providers)) {
+    cloned.tickets = {
+      ...cloned.tickets,
+      providers: cloned.tickets.providers.map((p) => {
+        switch (p.provider) {
+          case "jira":
+            return { ...p, apiToken: REDACTED_SECRET };
+          case "github":
+            return { ...p, token: REDACTED_SECRET };
+          case "linear":
+            return { ...p, apiKey: REDACTED_SECRET };
+          case "email":
+            // smtpPass is optional (some SMTP relays need no auth) —
+            // only redact when actually set.
+            return p.smtpPass ? { ...p, smtpPass: REDACTED_SECRET } : p;
+          case "webhook":
+            return p.secret ? { ...p, secret: REDACTED_SECRET } : p;
+          default:
+            return p;
+        }
+      }),
+    };
+  }
+  return cloned;
 }
