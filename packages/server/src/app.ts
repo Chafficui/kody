@@ -14,6 +14,7 @@ import { createAdminLogsRouter } from "./routes/admin/logs.js";
 import { createWidgetRouter } from "./routes/widget.js";
 import { createSessionsRouter } from "./routes/sessions.js";
 import { createFeedbackRouter } from "./routes/feedback.js";
+import { createToolJobsRouter } from "./routes/tool-jobs.js";
 import { createSiteAuth } from "./middleware/site-auth.js";
 import { createAdminAuth } from "./middleware/admin-auth.js";
 import { createRateLimitMiddleware, RateLimiter } from "./middleware/rate-limit.js";
@@ -76,6 +77,14 @@ export function createApp(
   app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
   app.use("/api/sessions", siteAuth, createSessionsRouter(conversationStore));
   app.use("/api/feedback", siteAuth, createFeedbackRouter(deps.db));
+  // `/api/tool-jobs/:jobId` is the widget's polling endpoint and
+  // is by design the highest-frequency route in the app. It still
+  // needs to be rate-limited so a misbehaving (or malicious) client
+  // can't drain a service via tight polling loops. The site's
+  // standard `messagesPerMinute` cap is a sensible default here —
+  // adjust `createRateLimitMiddleware` if you need a separate,
+  // larger budget for polling.
+  app.use("/api/tool-jobs", siteAuth, rateLimit, createToolJobsRouter(deps.db));
 
   app.use("/api/admin", createAdminAuthRouter(authService));
 
@@ -133,7 +142,7 @@ export function createApp(
       </div>
     </div>
   </div>
-  <script src="/widget.js" data-site-id="kody-website"></script>
+  <script src="/widget.js" data-site-id="demo"></script>
 </body>
 </html>`);
   });

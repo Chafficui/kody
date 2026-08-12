@@ -61,4 +61,69 @@ describe("loadEnv", () => {
     process.env.ADMIN_PASSWORD = "short";
     expect(() => loadEnv()).toThrow();
   });
+
+  describe("PUBLIC_ORIGIN", () => {
+    it("is undefined when unset", () => {
+      delete process.env.PUBLIC_ORIGIN;
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toBeUndefined();
+    });
+
+    it("is undefined when set to an empty string", () => {
+      process.env.PUBLIC_ORIGIN = "";
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toBeUndefined();
+    });
+
+    it("parses a single origin as a one-element array", () => {
+      process.env.PUBLIC_ORIGIN = "https://kody.example.com";
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toEqual(["https://kody.example.com"]);
+    });
+
+    it("splits comma-separated origins and trims whitespace", () => {
+      process.env.PUBLIC_ORIGIN = "https://a.example.com, https://b.example.com";
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toEqual([
+        "https://a.example.com",
+        "https://b.example.com",
+      ]);
+    });
+
+    it("drops empty entries from trailing or doubled commas", () => {
+      process.env.PUBLIC_ORIGIN = "https://a.example.com,,,https://b.example.com,";
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toEqual([
+        "https://a.example.com",
+        "https://b.example.com",
+      ]);
+    });
+
+    it("dedupes repeated origins", () => {
+      process.env.PUBLIC_ORIGIN = "https://a.example.com,https://a.example.com";
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toEqual(["https://a.example.com"]);
+    });
+
+    it("rejects scheme-less values", () => {
+      process.env.PUBLIC_ORIGIN = "kody.example.com";
+      expect(() => loadEnv()).toThrow(/valid URL/);
+    });
+
+    it("rejects non-http(s) schemes", () => {
+      process.env.PUBLIC_ORIGIN = "javascript:alert(1)";
+      expect(() => loadEnv()).toThrow(/http\(s\) URL/);
+    });
+
+    it("rejects when any comma-separated entry is invalid", () => {
+      process.env.PUBLIC_ORIGIN = "https://a.example.com,not-a-url";
+      expect(() => loadEnv()).toThrow(/valid URL/);
+    });
+
+    it("normalizes each origin to its URL.origin (drops path/query)", () => {
+      process.env.PUBLIC_ORIGIN = "https://a.example.com/some/path?x=1";
+      const env = loadEnv();
+      expect(env.PUBLIC_ORIGIN).toEqual(["https://a.example.com"]);
+    });
+  });
 });
