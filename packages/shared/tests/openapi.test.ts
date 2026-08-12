@@ -147,36 +147,82 @@ describe("OpenAPI generator", () => {
     expect(required).toEqual(expect.arrayContaining(["name", "description", "parameters", "endpoint"]));
   });
 
-  it("maps the KnowledgeSource discriminated union with inline oneOf branches", () => {
-    // The mapper inlines every union branch, so we deliberately omit the
-    // OpenAPI `discriminator` hint — emitting `{ propertyName }` alone
-    // against inline schemas is half-specified and Swagger UI / SDK
-    // generators handle it inconsistently. The discriminated union is
-    // still expressed (the consumer can match on the `type` property in
-    // each inline branch), we just don't ship a discriminator key.
+  it("maps the KnowledgeSource discriminated union with $ref branches and a discriminator", () => {
+    // The OpenAPI generator publishes the four named branch components
+    // first, then assembles the union's oneOf as $ref entries into those
+    // components. With named refs in place we can also emit a well-formed
+    // `discriminator` block (propertyName + explicit mapping) that SDK
+    // generators and Swagger UI both consume cleanly.
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
     };
     const knowledgeSource = spec.components.schemas.KnowledgeSource;
     expect(knowledgeSource).toBeDefined();
-    expect(knowledgeSource.oneOf).toBeDefined();
-    expect(Array.isArray(knowledgeSource.oneOf)).toBe(true);
-    expect((knowledgeSource.oneOf as unknown[]).length).toBeGreaterThanOrEqual(4);
-    expect(knowledgeSource.discriminator).toBeUndefined();
+    const oneOf = knowledgeSource.oneOf as Array<{ $ref?: string }>;
+    expect(Array.isArray(oneOf)).toBe(true);
+    expect(oneOf.length).toBe(4);
+    const refs = oneOf.map((b) => b.$ref).sort();
+    expect(refs).toEqual(
+      [
+        "#/components/schemas/KnowledgeSourceFaq",
+        "#/components/schemas/KnowledgeSourceFile",
+        "#/components/schemas/KnowledgeSourceText",
+        "#/components/schemas/KnowledgeSourceUrl",
+      ].sort(),
+    );
+    // Every $ref must resolve to a defined component.
+    for (const ref of refs) {
+      const name = (ref ?? "").split("/").pop() ?? "";
+      expect(spec.components.schemas[name], `${ref} must resolve`).toBeDefined();
+    }
+    // Discriminator is well-formed: propertyName matches the Zod
+    // discriminator, and the mapping covers every literal value.
+    const disc = knowledgeSource.discriminator as
+      | { propertyName: string; mapping: Record<string, string> }
+      | undefined;
+    expect(disc).toBeDefined();
+    expect(disc?.propertyName).toBe("type");
+    expect(Object.keys(disc?.mapping ?? {}).sort()).toEqual(["faq", "file", "text", "url"]);
   });
 
-  it("maps the TicketProvider discriminated union with inline oneOf branches", () => {
-    // See the KnowledgeSource test above for the rationale — the same
-    // no-discriminator rule applies here because oneOf entries are inline.
+  it("maps the TicketProvider discriminated union with $ref branches and a discriminator", () => {
+    // Same shape as KnowledgeSource: five $ref entries, one per provider
+    // branch, plus a discriminator keyed on `provider`. See the
+    // KnowledgeSource test above for the rationale.
     const spec = buildOpenApiSpec() as {
       components: { schemas: Record<string, Record<string, unknown>> };
     };
     const ticketProvider = spec.components.schemas.TicketProvider;
     expect(ticketProvider).toBeDefined();
-    expect(ticketProvider.oneOf).toBeDefined();
-    expect(Array.isArray(ticketProvider.oneOf)).toBe(true);
-    expect((ticketProvider.oneOf as unknown[]).length).toBeGreaterThanOrEqual(5);
-    expect(ticketProvider.discriminator).toBeUndefined();
+    const oneOf = ticketProvider.oneOf as Array<{ $ref?: string }>;
+    expect(Array.isArray(oneOf)).toBe(true);
+    expect(oneOf.length).toBe(5);
+    const refs = oneOf.map((b) => b.$ref).sort();
+    expect(refs).toEqual(
+      [
+        "#/components/schemas/TicketProviderEmail",
+        "#/components/schemas/TicketProviderGithub",
+        "#/components/schemas/TicketProviderJira",
+        "#/components/schemas/TicketProviderLinear",
+        "#/components/schemas/TicketProviderWebhook",
+      ].sort(),
+    );
+    for (const ref of refs) {
+      const name = (ref ?? "").split("/").pop() ?? "";
+      expect(spec.components.schemas[name], `${ref} must resolve`).toBeDefined();
+    }
+    const disc = ticketProvider.discriminator as
+      | { propertyName: string; mapping: Record<string, string> }
+      | undefined;
+    expect(disc).toBeDefined();
+    expect(disc?.propertyName).toBe("provider");
+    expect(Object.keys(disc?.mapping ?? {}).sort()).toEqual([
+      "email",
+      "github",
+      "jira",
+      "linear",
+      "webhook",
+    ]);
   });
 
   it("requires x-kody-site-id on every widget-facing operation", () => {

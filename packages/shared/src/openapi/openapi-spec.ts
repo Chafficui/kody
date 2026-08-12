@@ -96,19 +96,58 @@ function buildComponents(): Record<string, unknown> {
   // Redacted read model used by the admin GET endpoints.
   out.SiteConfigRead = redactSiteConfigForRead(out.SiteConfig as Record<string, unknown>);
   out.PublicSiteConfig = zodToOas(publicSiteConfigSchema);
-  out.KnowledgeSource = zodToOas(knowledgeSourceSchema);
-  // Named union branches so SDK generators can reference them by $ref
-  // instead of seeing an inline oneOf they can't resolve.
+  // Discriminated unions: publish the branches as named components first
+  // (so SDK generators can `$ref` them) then replace the union's inline
+  // `oneOf` with `$ref` entries that point at those components, plus the
+  // OpenAPI 3.0 / 3.1 `discriminator` block (propertyName + explicit
+  // mapping) that makes the union actually consumable.
   out.KnowledgeSourceText = zodToOas(textKnowledgeSourceSchema);
   out.KnowledgeSourceUrl = zodToOas(urlKnowledgeSourceSchema);
   out.KnowledgeSourceFile = zodToOas(fileKnowledgeSourceSchema);
   out.KnowledgeSourceFaq = zodToOas(faqKnowledgeSourceSchema);
-  out.TicketProvider = zodToOas(ticketProviderSchema);
+  out.KnowledgeSource = {
+    ...(zodToOas(knowledgeSourceSchema) as Record<string, unknown>),
+    oneOf: [
+      { $ref: "#/components/schemas/KnowledgeSourceText" },
+      { $ref: "#/components/schemas/KnowledgeSourceUrl" },
+      { $ref: "#/components/schemas/KnowledgeSourceFile" },
+      { $ref: "#/components/schemas/KnowledgeSourceFaq" },
+    ],
+    discriminator: {
+      propertyName: "type",
+      mapping: {
+        text: "#/components/schemas/KnowledgeSourceText",
+        url: "#/components/schemas/KnowledgeSourceUrl",
+        file: "#/components/schemas/KnowledgeSourceFile",
+        faq: "#/components/schemas/KnowledgeSourceFaq",
+      },
+    },
+  };
   out.TicketProviderJira = zodToOas(jiraTicketProviderSchema);
   out.TicketProviderGithub = zodToOas(githubTicketProviderSchema);
   out.TicketProviderLinear = zodToOas(linearTicketProviderSchema);
   out.TicketProviderEmail = zodToOas(emailTicketProviderSchema);
   out.TicketProviderWebhook = zodToOas(webhookTicketProviderSchema);
+  out.TicketProvider = {
+    ...(zodToOas(ticketProviderSchema) as Record<string, unknown>),
+    oneOf: [
+      { $ref: "#/components/schemas/TicketProviderJira" },
+      { $ref: "#/components/schemas/TicketProviderGithub" },
+      { $ref: "#/components/schemas/TicketProviderLinear" },
+      { $ref: "#/components/schemas/TicketProviderEmail" },
+      { $ref: "#/components/schemas/TicketProviderWebhook" },
+    ],
+    discriminator: {
+      propertyName: "provider",
+      mapping: {
+        jira: "#/components/schemas/TicketProviderJira",
+        github: "#/components/schemas/TicketProviderGithub",
+        linear: "#/components/schemas/TicketProviderLinear",
+        email: "#/components/schemas/TicketProviderEmail",
+        webhook: "#/components/schemas/TicketProviderWebhook",
+      },
+    },
+  };
   out.ToolsConfig = zodToOas(toolsSchema);
   // CustomTool is the same Zod the server validates against, so any
   // future change flows into the public spec automatically.
@@ -133,6 +172,25 @@ function buildComponents(): Record<string, unknown> {
   out.TicketResult = zodToOas(ticketResultSchema);
   out.AdminLogin = zodToOas(adminLoginSchema);
   out.AdminCreateUser = zodToOas(adminCreateUserSchema);
+  // Response shape for POST /api/admin/login — used by both 200 and the
+  // docs. The bearer token is the only field; the 24h expiry and the
+  // httpOnly session cookie are documented in the path's prose.
+  out.AdminLoginResponse = {
+    type: "object",
+    required: ["token", "expiresAt"],
+    properties: {
+      token: {
+        type: "string",
+        description:
+          "Opaque bearer token. Pass as `Authorization: Bearer <token>` for CLI / script use. Mirror of the `kody_session` httpOnly cookie for browser clients.",
+      },
+      expiresAt: {
+        type: "string",
+        format: "date-time",
+        description: "ISO-8601 expiry for the token. Tokens are valid for 24 hours.",
+      },
+    },
+  };
   return out;
 }
 
