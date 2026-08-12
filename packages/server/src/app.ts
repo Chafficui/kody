@@ -26,6 +26,7 @@ import { ScrapeStore } from "./services/scrape-store.js";
 import { createAdminScrapingRouter } from "./routes/admin/scraping.js";
 import { createAdminToolsRouter } from "./routes/admin/tools.js";
 import { ToolExecutor } from "./services/tools/executor.js";
+import { createPublicCorsForSiteHeader, createPublicCorsForConfigRoute, createWidgetCors } from "./middleware/public-cors.js";
 
 export interface AppDependencies {
   db: Database.Database;
@@ -69,18 +70,63 @@ export function createApp(
   app.use(express.json({ limit: "2mb" }));
 
   // CORS handling is intentionally split:
-  //  - Public widget APIs (/api/chat, /api/tickets, /api/sessions, /api/feedback)
-  //    enforce the per-site allowedOrigins allowlist via `siteAuth` (no
-  //    credentialed CORS, no reflected origin).
+  //  - Public widget APIs (/api/chat, /api/tickets, /api/sessions,
+  //    /api/feedback, /api/config/:siteId, /widget.js) validate the
+  //    request Origin against the per-site allowedOrigins allowlist
+  //    and emit a non-credentialed Access-Control-Allow-Origin so the
+  //    embedded widget can read responses cross-origin. Preflights
+  //    (OPTIONS) on those routes return 204 with the preflight headers
+  //    — see ./middleware/public-cors.ts.
   //  - The admin API requires bearer authentication for state-changing
   //    methods (see adminAuth), which the React admin SPA already
   //    sends. We deliberately do NOT reflect the request Origin into
   //    `Access-Control-Allow-Origin` and do NOT set
   //    `Access-Control-Allow-Credentials` — credentialed CORS + reflected
-  //    origin + cookie auth is a CSRF gadget.
-  //  - Preflight (OPTIONS) is short-circuited so cross-origin XHR from
-  //    the admin SPA still resolves, but the response carries no
-  //    CORS headers.
+  //    origin + cookie auth is a CSRF gadget. The admin routes short-
+  //    circuit OPTIONS below without any CORS headers.
+  const publicCorsForSiteHeader = createPublicCorsForSiteHeader(siteStore);
+  const publicCorsForConfigRoute = createPublicCorsForConfigRoute(siteStore);
+  const widgetCors = createWidgetCors();
+
+  app.use("/health", healthRouter);
+  app.use("/widget.js", widgetCors, createWidgetRouter());
+  app.use("/api/config", publicCorsForConfigRoute, createConfigRouter(siteStore));
+
+  const siteAuth = createSiteAuth(siteStore);
+  const rateLimit = createRateLimitMiddleware(rateLimiter);
+  app.use(
+    "/api/chat",
+    publicCorsForSiteHeader,
+    siteAuth,
+    rateLimit,
+    createChatRouter(conversationStore, urlFetcher, deps.db),
+  );
+  app.use(
+    "/api/tickets",
+    publicCorsForSiteHeader,
+    siteAuth,
+    rateLimit,
+    createTicketsRouter(conversationStore),
+  );
+  app.use(
+    "/api/sessions",
+    publicCorsForSiteHeader,
+    siteAuth,
+    createSessionsRouter(conversationStore),
+  );
+  app.use(
+    "/api/feedback",
+    publicCorsForSiteHeader,
+    siteAuth,
+    createFeedbackRouter(deps.db),
+  );
+
+  app.use("/api/admin", createAdminAuthRouter(authService));
+
+  // Admin and other non-public routes: short-circuit OPTIONS preflights
+  // with no CORS headers. The browser sees a missing
+  // Access-Control-Allow-Origin and refuses to read the response —
+  // exactly what we want for the bearer-auth API surface.
   app.use((req, res, next) => {
     if (req.method === "OPTIONS") {
       res.status(204).end();
@@ -88,19 +134,6 @@ export function createApp(
     }
     next();
   });
-
-  app.use("/health", healthRouter);
-  app.use("/widget.js", createWidgetRouter());
-  app.use("/api/config", createConfigRouter(siteStore));
-
-  const siteAuth = createSiteAuth(siteStore);
-  const rateLimit = createRateLimitMiddleware(rateLimiter);
-  app.use("/api/chat", siteAuth, rateLimit, createChatRouter(conversationStore, urlFetcher, deps.db));
-  app.use("/api/tickets", siteAuth, rateLimit, createTicketsRouter(conversationStore));
-  app.use("/api/sessions", siteAuth, createSessionsRouter(conversationStore));
-  app.use("/api/feedback", siteAuth, createFeedbackRouter(deps.db));
-
-  app.use("/api/admin", createAdminAuthRouter(authService));
 
   const adminAuth = createAdminAuth(authService);
   app.use("/api/admin/sites", adminAuth, createAdminSitesRouter(siteStore));
